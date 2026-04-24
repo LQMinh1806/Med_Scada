@@ -1,0 +1,201 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700;800&display=swap');
+
+/* Intercom-inspired UI foundation: warm canvas, sharp cards, and vivid accents. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --font-primary: 'Sora', 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-secondary: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Fira Code', 'Consolas', monospace;
+  --color-ink: #111111;
+  --color-cream: #faf9f6;
+  --color-oat: #dedbd6;
+  --color-accent-blue: #1976d2;
+  --color-blue: #65b5ff;
+  --color-green: #0bdf50;
+  --color-danger: #c41c1c;
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  color: var(--color-ink);
+  background:
+    radial-gradient(circle at 6% 8%, rgba(25, 118, 210, 0.14), transparent 30%),
+    radial-gradient(circle at 88% 16%, rgba(101, 181, 255, 0.18), transparent 34%),
+    linear-gradient(180deg, #fffdfa 0%, var(--color-cream) 56%, #f1ede7 100%);
+  background-attachment: fixed;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  animation: page-boot 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes page-boot {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== Smooth scrollbar styling ===== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(17, 17, 17, 0.03);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(17, 17, 17, 0.18);
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 17, 17, 0.34);
+}
+
+/* ===== STAT/Urgent flash ===== */
+@keyframes flash-urgent {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.flash-urgent {
+  animation: flash-urgent 0.8s ease-in-out infinite;
+}
+
+/* ===== Red pulse glow for E-Stop/STAT ===== */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(196, 28, 28, 0.42); }
+  50% { box-shadow: 0 0 20px 6px rgba(196, 28, 28, 0.24); }
+}
+
+.pulse-glow-red {
+  animation: pulse-glow 1.2s ease-in-out infinite;
+}
+
+/* ===== Cyan pulse glow for active elements ===== */
+@keyframes pulse-cyan {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(101, 181, 255, 0.36); }
+  50% { box-shadow: 0 0 16px 4px rgba(101, 181, 255, 0.2); }
+}
+
+.pulse-cyan {
+  animation: pulse-cyan 2s ease-in-out infinite;
+}
+
+/* ===== Shimmer effect for premium cards ===== */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer-hover:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0, 229, 255, 0.04) 25%,
+    rgba(25, 118, 210, 0.08) 50%,
+    rgba(101, 181, 255, 0.04) 75%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+  pointer-events: none;
+}
+
+/* ===== Pulse ring for status indicators ===== */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+}
+
+/* ===== Slide up entrance ===== */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.slide-up {
+  animation: slide-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ===== Page transition helpers ===== */
+.page-fade-enter {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.page-fade-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+/* ===== Glow text ===== */
+.glow-text {
+  text-shadow: 0 0 12px rgba(25, 118, 210, 0.25),
+               0 0 24px rgba(101, 181, 255, 0.2);
+}
+
+/* ===== Glass card utility ===== */
+.glass-card {
+  background: rgba(255, 255, 255, 0.86) !important;
+  backdrop-filter: blur(14px) saturate(120%);
+  border: 1px solid rgba(17, 17, 17, 0.08) !important;
+}
+
+/* ===== Data display monospace ===== */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  body {
+    font-size: 14px;
+  }
+}

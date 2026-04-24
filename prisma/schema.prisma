@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  TECH
+  OPERATOR
+}
+
+enum SpecimenPriority {
+  STAT
+  ROUTINE
+}
+
+enum TransportStatus {
+  RUNNING
+  ARRIVED
+  ERROR
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  username      String   @unique
+  passwordHash  String
+  fullname      String
+  role          UserRole @default(OPERATOR)
+  active        Boolean  @default(true)
+  fingerprintId Int?     @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  scannedSpecimens Specimen[]
+  systemLogs       SystemLog[]
+}
+
+model Station {
+  id            String            @id
+  name          String
+  locationIndex Int               @unique
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  fromTransports TransportRecord[] @relation("FromStation")
+  toTransports   TransportRecord[] @relation("ToStation")
+}
+
+model Specimen {
+  id               Int               @id @default(autoincrement())
+  barcode          String            @unique
+  patientName      String
+  testType         String
+  priority         SpecimenPriority  @default(ROUTINE)
+  scanTime         DateTime          @default(now())
+  scannedById      Int
+  scannedBy        User              @relation(fields: [scannedById], references: [id])
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  transportRecords TransportRecord[]
+
+  @@index([scannedById])
+}
+
+model TransportRecord {
+  id            Int             @id @default(autoincrement())
+  cabinId       String
+  status        TransportStatus @default(RUNNING)
+  dispatchTime  DateTime
+  arrivalTime   DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  specimenId    Int
+  specimen      Specimen        @relation(fields: [specimenId], references: [id], onDelete: Cascade)
+
+  fromStationId String
+  fromStation   Station         @relation("FromStation", fields: [fromStationId], references: [id])
+
+  toStationId   String
+  toStation     Station         @relation("ToStation", fields: [toStationId], references: [id])
+
+  @@index([specimenId])
+  @@index([fromStationId])
+  @@index([toStationId])
+  @@index([status])
+  @@index([dispatchTime])
+}
+
+model SystemLog {
+  id        Int      @id @default(autoincrement())
+  event     String
+  type      String
+  createdAt DateTime @default(now())
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([type])
+  @@index([createdAt])
+  @@index([userId])
+}
