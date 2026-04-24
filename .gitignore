@@ -8,9 +8,14 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+node_modules_old
 dist
 dist-ssr
 *.local
+
+# Runtime
+.runtime/
+lint_output.txt
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +27,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment
+.env
+!.env.example

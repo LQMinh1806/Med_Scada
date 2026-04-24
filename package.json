@@ -1,17 +1,19 @@
 {
   "name": "robot-ui",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
-    "dev": "vite",
-    "dev:all": "concurrently \"npm run server\" \"npm run dev\"",
-    "dev:full": "npm run db:up && wait-on tcp:127.0.0.1:5432 && npm run dev:all",
-    "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview",
-    "server": "node server.js",
-    "server:dev": "node --watch server.js",
+    "dev": "concurrently -n BE,FE -c blue,green \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "dev:full": "npm run db:up && npx wait-on tcp:127.0.0.1:5432 && npm run dev",
+    "build": "npm run build -w frontend",
+    "lint": "npm run lint -w frontend",
+    "server": "npm run start -w backend",
+    "server:dev": "npm run dev -w backend",
     "db:up": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-postgres.ps1",
     "db:up:docker": "docker compose up -d postgres",
     "db:down": "docker compose stop postgres",
@@ -19,38 +21,9 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"
   },
-  "dependencies": {
-    "@emotion/react": "^11.14.0",
-    "@emotion/styled": "^11.14.1",
-    "@mui/icons-material": "^9.0.0",
-    "@mui/material": "^9.0.0",
-    "@prisma/client": "^6.17.1",
-    "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "leaflet": "^1.9.4",
-    "node-opcua": "^2.169.0",
-    "notistack": "^3.0.2",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "react-leaflet": "^5.0.0",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3"
-  },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^9.2.1",
-    "eslint": "^9.39.4",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^17.4.0",
     "prisma": "^6.17.1",
-    "vite": "^8.0.4",
     "wait-on": "^8.0.5"
   }
 }
