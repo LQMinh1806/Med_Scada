@@ -50,13 +50,13 @@ if exist ".env" (
 )
 echo.
 
-echo [3/6] Starting frontend (Vite) first...
+echo [3/7] Starting frontend (Vite) first...
 start "" /B "%NPM_CMD%" run dev -w frontend
-start "" /B powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\open-ui-browser.ps1" -Url "http://localhost:5173/" -Port 5173 -PidFile ".runtime\browser.pid"
+start "" /B powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\open-ui-browser.ps1" -Url "http://medscada.id.vn/" -Port 5173 -PidFile ".runtime\browser.pid"
 echo [OK] Frontend start command completed.
 echo.
 
-echo [4/6] Starting database...
+echo [4/7] Starting database...
 call "%NPM_CMD%" run db:up
 if errorlevel 1 (
 	echo [WARN] Local PostgreSQL startup failed. Trying Docker fallback...
@@ -70,7 +70,7 @@ if errorlevel 1 (
 echo [OK] Database start command completed.
 echo.
 
-echo [5/6] Waiting for DB...
+echo [5/7] Waiting for DB...
 call "%NPM_CMD%" exec -- wait-on tcp:127.0.0.1:5432
 if errorlevel 1 (
 	echo [ERROR] Database port 5432 is not ready.
@@ -79,7 +79,12 @@ if errorlevel 1 (
 )
 
 echo.
-echo [6/6] Starting Prisma Studio and backend...
+echo [6/7] Starting Cloudflare Tunnel (medscada)...
+start "Cloudflare Tunnel" /B "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://127.0.0.1:5173 run medscada
+echo [OK] Tunnel start command initiated.
+
+echo.
+echo [7/7] Starting Prisma Studio and backend...
 start "" /B "%NPM_CMD%" run prisma:studio -- --browser none
 
 call "%NPM_CMD%" run start -w backend

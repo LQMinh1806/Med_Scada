@@ -94,6 +94,28 @@ if errorlevel 1 (
 echo [OK] Prisma migration deploy completed.
 echo.
 
+echo [7/7] Setting up Cloudflare Tunnel...
+where cloudflared >nul 2>nul
+if errorlevel 1 (
+  echo [INFO] Cloudflare CLI not found. Installing via winget...
+  winget install cloudflare.cloudflared
+  if errorlevel 1 (
+    echo [WARN] Automatic installation failed. 
+    echo        Please download and install cloudflared manually from:
+    echo        https://github.com/cloudflare/cloudflared/releases
+  ) else (
+    echo [OK] Cloudflare CLI installed.
+  )
+) else (
+  echo [OK] Cloudflare CLI already installed.
+)
+
+echo.
+echo [IMPORTANT] To enable remote access via your domain, you must login:
+echo             1. Run: cloudflared tunnel login
+echo             2. Select your domain (medscada.id.vn) in the browser.
+echo.
+
 echo ==========================================
 echo Setup completed successfully.
 echo Next step: run start-full-program.bat

@@ -12,21 +12,30 @@ echo   SCADA Robot UI - Stop
 echo ==========================================
 echo.
 
-echo [1/4] Closing browser opened by startup...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\close-ui-browser.ps1" -PidFile ".runtime\browser.pid" -Url "http://localhost:5173/"
+echo [1/5] Closing browser opened by startup...
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\close-ui-browser.ps1" -PidFile ".runtime\browser.pid" -Url "http://medscada.id.vn/"
 echo.
 
-echo [2/4] Stopping app ports...
+echo [2/5] Stopping Cloudflare Tunnel...
+taskkill /IM cloudflared.exe /F >nul 2>&1
+if "%ERRORLEVEL%"=="0" (
+    echo [OK] Cloudflare Tunnel stopped.
+) else (
+    echo [INFO] Cloudflare Tunnel was not running.
+)
+echo.
+
+echo [3/5] Stopping app ports...
 call :kill_port 3000 "Backend (server.js)"
 call :kill_port 5173 "Frontend (Vite dev server)"
 call :kill_port 5555 "Prisma Studio"
 echo.
 
-echo [3/4] Stopping remaining project processes (targeted)...
+echo [4/5] Stopping remaining project processes (targeted)...
 powershell -NoProfile -Command "$patterns=@('server.js','vite','prisma studio'); $procs=Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'node.exe' -and $_.CommandLine -and ($patterns | ForEach-Object { $_ }) -match '.' }; $matches=$procs | Where-Object { $cmd=$_.CommandLine.ToLower(); $cmd -like '*server.js*' -or $cmd -like '*vite*' -or $cmd -like '*prisma*studio*' }; if($matches){ $matches | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Write-Output ('[OK] Stopped PID ' + $_.ProcessId) } } else { Write-Output '[INFO] No extra matching node processes found.' }"
 echo.
 
-echo [4/4] Stopping PostgreSQL container (if started by project)...
+echo [5/5] Stopping PostgreSQL container (if started by project)...
 call :resolve_npm
 if defined NPM_CMD (
   call "%NPM_CMD%" run db:down >nul 2>&1
