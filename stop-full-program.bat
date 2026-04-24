@@ -13,7 +13,7 @@ echo ==========================================
 echo.
 
 echo [1/4] Closing browser opened by startup...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\close-ui-browser.ps1" -PidFile ".runtime\browser.pid" -Url "http://192.168.1.91:5173/"
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\close-ui-browser.ps1" -PidFile ".runtime\browser.pid" -Url "http://localhost:5173/"
 echo.
 
 echo [2/4] Stopping app ports...

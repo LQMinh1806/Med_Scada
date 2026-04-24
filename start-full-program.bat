@@ -52,7 +52,7 @@ echo.
 
 echo [3/6] Starting frontend (Vite) first...
 start "" /B "%NPM_CMD%" run dev -w frontend
-start "" /B powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\open-ui-browser.ps1" -Url "http://192.168.1.91:5173/" -Port 5173 -PidFile ".runtime\browser.pid"
+start "" /B powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\open-ui-browser.ps1" -Url "http://localhost:5173/" -Port 5173 -PidFile ".runtime\browser.pid"
 echo [OK] Frontend start command completed.
 echo.
 
