@@ -32,9 +32,9 @@ import {
   LinearProgress,
   keyframes,
 } from '@mui/material';
-import { 
-  BuildCircle, 
-  Delete, 
+import {
+  BuildCircle,
+  Delete,
   History,
   Fingerprint as FingerprintIcon,
   Close as CloseIcon,
@@ -44,7 +44,7 @@ import {
 import { io } from 'socket.io-client';
 import TabPanel from './TabPanel';
 import TransportHistoryDialog from './TransportHistoryDialog';
-import { USER_ROLES } from '../constants';
+import { USER_ROLES, STATIONS } from '../constants';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 const ENROLL_TIMEOUT_MS = 60_000;
@@ -73,6 +73,7 @@ const INITIAL_NEW_USER = {
   fullname: '',
   password: '',
   role: USER_ROLES.OPERATOR,
+  stationId: '',
 };
 
 const maintenanceSwitchSx = {
@@ -161,21 +162,20 @@ const SystemLogsTable = memo(function SystemLogsTable({ logs }) {
                         log.type === 'error'
                           ? alpha('#FF4D6A', 0.12)
                           : log.type === 'success'
-                          ? alpha('#36D399', 0.12)
-                          : alpha('#0A7AFF', 0.12),
+                            ? alpha('#36D399', 0.12)
+                            : alpha('#0A7AFF', 0.12),
                       color:
                         log.type === 'error'
                           ? '#FF4D6A'
                           : log.type === 'success'
-                          ? '#36D399'
-                          : '#4DA3FF',
-                      border: `1px solid ${
-                        log.type === 'error'
+                            ? '#36D399'
+                            : '#4DA3FF',
+                      border: `1px solid ${log.type === 'error'
                           ? alpha('#FF4D6A', 0.15)
                           : log.type === 'success'
-                          ? alpha('#36D399', 0.15)
-                          : alpha('#0A7AFF', 0.15)
-                      }`,
+                            ? alpha('#36D399', 0.15)
+                            : alpha('#0A7AFF', 0.15)
+                        }`,
                     }}
                   />
                 </TableCell>
@@ -195,6 +195,7 @@ const UserManagementTable = memo(function UserManagementTable({
   users,
   onToggleActive,
   onUpdateRole,
+  onUpdateStation,
   onRemove,
   onEnrollFingerprint,
 }) {
@@ -210,6 +211,7 @@ const UserManagementTable = memo(function UserManagementTable({
               <TableCell>Username</TableCell>
               <TableCell>Họ & Tên</TableCell>
               <TableCell>Vai Trò</TableCell>
+              <TableCell>Trạm Làm Việc</TableCell>
               <TableCell>Kích hoạt</TableCell>
               <TableCell>Hành động</TableCell>
             </TableRow>
@@ -235,6 +237,28 @@ const UserManagementTable = memo(function UserManagementTable({
                       <MenuItem value={USER_ROLES.OPERATOR}>Vận hành viên</MenuItem>
                     </Select>
                   </FormControl>
+                </TableCell>
+                <TableCell sx={{ width: 180 }}>
+                  {user.role === USER_ROLES.OPERATOR ? (
+                    <FormControl size="small" fullWidth>
+                      <Select
+                        value={user.stationId || ''}
+                        displayEmpty
+                        onChange={(event) => onUpdateStation(user.username, event.target.value)}
+                      >
+                        <MenuItem value=""><em>(Tất cả)</em></MenuItem>
+                        {STATIONS.map((station) => (
+                          <MenuItem key={station.id} value={station.id}>
+                            {station.id} - {station.name}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      Toàn quyền
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell>
                   <Switch
@@ -290,6 +314,7 @@ const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
         password: newUser.password,
         fullname: newUser.fullname.trim(),
         role: newUser.role,
+        stationId: newUser.role === USER_ROLES.OPERATOR ? (newUser.stationId || null) : null,
       });
       if (success) {
         setNewUser(INITIAL_NEW_USER);
@@ -346,12 +371,36 @@ const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
           <Select
             value={newUser.role}
             label="Vai trò hệ thống"
-            onChange={(e) => setField('role', e.target.value)}
+            onChange={(e) => {
+              const newRole = e.target.value;
+              setField('role', newRole);
+              // Clear stationId when switching to tech
+              if (newRole !== USER_ROLES.OPERATOR) {
+                setField('stationId', '');
+              }
+            }}
           >
             <MenuItem value={USER_ROLES.OPERATOR}>Vận hành viên (Giám sát & Điều khiển)</MenuItem>
             <MenuItem value={USER_ROLES.TECH}>Kỹ thuật viên (Toàn quyền)</MenuItem>
           </Select>
         </FormControl>
+        {newUser.role === USER_ROLES.OPERATOR && (
+          <FormControl fullWidth margin="normal" size="small">
+            <InputLabel>Trạm làm việc</InputLabel>
+            <Select
+              value={newUser.stationId}
+              label="Trạm làm việc"
+              onChange={(e) => setField('stationId', e.target.value)}
+            >
+              <MenuItem value=""><em>Không giới hạn (tất cả trạm)</em></MenuItem>
+              {STATIONS.map((st) => (
+                <MenuItem key={st.id} value={st.id}>
+                  {st.name} ({st.id})
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
         <Button
           type="submit"
           variant="contained"
@@ -682,7 +731,7 @@ const AdminPage = memo(function AdminPage({ scada }) {
   const [tabIndex, setTabIndex] = useState(0); // Mặc định mở tab Lịch Sử Hệ Thống
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [maintenanceReason, setMaintenanceReason] = useState(scada.maintenanceMode?.reason || '');
-  
+
   // Fingerprint Enrollment State
   const [enrollUser, setEnrollUser] = useState(null);
 
@@ -693,6 +742,13 @@ const AdminPage = memo(function AdminPage({ scada }) {
   const handleCloseEnroll = useCallback(() => {
     setEnrollUser(null);
   }, []);
+
+  // Called by modal when enrollment succeeds — updates fingerprintId in the user list immediately
+  const handleEnrollSuccess = useCallback(({ userId, fingerprintId }) => {
+    if (scada && typeof scada.updateUserFingerprintId === 'function') {
+      scada.updateUserFingerprintId(userId, fingerprintId);
+    }
+  }, [scada]);
 
   const handleTabChange = useCallback((_, newValue) => {
     setTabIndex(newValue);
@@ -827,6 +883,7 @@ const AdminPage = memo(function AdminPage({ scada }) {
             users={scada.users}
             onToggleActive={scada.toggleUserActive}
             onUpdateRole={scada.updateUserRole}
+            onUpdateStation={scada.updateUserStation}
             onRemove={scada.removeUser}
             onEnrollFingerprint={handleEnrollFingerprint}
           />
@@ -853,6 +910,7 @@ const AdminPage = memo(function AdminPage({ scada }) {
       <FingerprintEnrollModal
         user={enrollUser}
         onClose={handleCloseEnroll}
+        onSuccess={handleEnrollSuccess}
         scada={scada}
       />
     </Box>
@@ -862,67 +920,89 @@ const AdminPage = memo(function AdminPage({ scada }) {
 // ── Fingerprint Enroll Modal Component ─────────────────────────────────────────
 const FP_STATUS = { WAITING: 'waiting', SUCCESS: 'success', TIMEOUT: 'timeout', ERROR: 'error' };
 
-const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onClose, scada }) {
+const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onClose, onSuccess, scada }) {
   const [status, setStatus] = useState(FP_STATUS.WAITING);
+  const [enrollStep, setEnrollStep] = useState(1);
   const [progress, setProgress] = useState(100);
   const [errorMsg, setErrorMsg] = useState('');
-  const socketRef = useRef(null);
   const timerRef = useRef(null);
+  const autoCloseRef = useRef(null);
   const progressRef = useRef(null);
   const startTimeRef = useRef(null);
-
-  const cleanup = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (progressRef.current) cancelAnimationFrame(progressRef.current);
-    if (socketRef.current) {
-      socketRef.current.emit('FINGERPRINT_ENROLL_CANCEL');
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
-  }, []);
+  const doneRef = useRef(false);
 
   useEffect(() => {
     if (!user) {
-      cleanup();
+      doneRef.current = false;
+      if (autoCloseRef.current) { clearTimeout(autoCloseRef.current); autoCloseRef.current = null; }
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      if (progressRef.current) { cancelAnimationFrame(progressRef.current); progressRef.current = null; }
       return;
     }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    doneRef.current = false;
     setStatus(FP_STATUS.WAITING);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setEnrollStep(1);
     setProgress(100);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setErrorMsg('');
 
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'], withCredentials: true });
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      socket.emit('FINGERPRINT_ENROLL_START', { userId: user.id, username: user.username });
-    });
-
-    socket.on('connect_error', () => {
-      setErrorMsg('Không thể kết nối máy chủ.');
+    // Use the MAIN app socket (already authenticated and connected)
+    const socket = scada.getSocket?.();
+    if (!socket?.connected) {
+      setErrorMsg('Socket chưa kết nối. Vui lòng thử lại.');
       setStatus(FP_STATUS.ERROR);
-    });
+      return;
+    }
 
-    socket.on('ENROLL_SUCCESS', (data) => {
-      if (data.userId === user.id) {
-        setStatus(FP_STATUS.SUCCESS);
-        if (timerRef.current) clearTimeout(timerRef.current);
-        if (scada && typeof scada.hydratePersistedData === 'function') {
-          scada.hydratePersistedData({ syncStations: false }).catch(() => null);
-        }
+    // Tell server to enter enrollment mode for this user
+    socket.emit('FINGERPRINT_ENROLL_START', { userId: user.id, username: user.username });
+    console.log('[FP Modal] FINGERPRINT_ENROLL_START via main socket, userId=', user.id);
+
+    // Listen for enrollment result on the MAIN socket
+    const handleSuccess = (data) => {
+      // eslint-disable-next-line eqeqeq
+      if (data.userId != user.id) return;
+      if (doneRef.current) return;
+      doneRef.current = true;
+
+      console.log('[FP Modal] ENROLL_SUCCESS received, fpId=', data.fingerprintId);
+
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      if (progressRef.current) { cancelAnimationFrame(progressRef.current); progressRef.current = null; }
+
+      setStatus(FP_STATUS.SUCCESS);
+
+      if (typeof onSuccess === 'function') {
+        onSuccess({ userId: data.userId, fingerprintId: data.fingerprintId });
       }
-    });
 
-    socket.on('ENROLL_ERROR', (data) => {
+      autoCloseRef.current = setTimeout(() => {
+        autoCloseRef.current = null;
+        onClose();
+      }, 2000);
+    };
+
+    const handleError = (data) => {
+      if (doneRef.current) return;
       setErrorMsg(data.message || 'Lỗi đăng ký vân tay.');
       setStatus(FP_STATUS.ERROR);
-    });
+    };
 
+    const handleStepDone = (data) => {
+      // eslint-disable-next-line eqeqeq
+      if (data.userId != user.id) return;
+      if (doneRef.current) return;
+      setEnrollStep(data.step + 1);
+    };
+
+    socket.on('ENROLL_SUCCESS', handleSuccess);
+    socket.on('ENROLL_ERROR', handleError);
+    socket.on('ENROLL_STEP_DONE', handleStepDone);
+
+    // Progress bar
     startTimeRef.current = Date.now();
     const updateProgress = () => {
+      if (doneRef.current) return;
       const elapsed = Date.now() - startTimeRef.current;
       const remaining = Math.max(0, 1 - elapsed / ENROLL_TIMEOUT_MS);
       setProgress(remaining * 100);
@@ -930,20 +1010,35 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
     };
     progressRef.current = requestAnimationFrame(updateProgress);
 
+    // Timeout
     timerRef.current = setTimeout(() => {
+      if (doneRef.current) return;
       setStatus(FP_STATUS.TIMEOUT);
       setErrorMsg('Hết thời gian chờ đăng ký.');
       socket.emit('FINGERPRINT_ENROLL_CANCEL');
-      socket.disconnect();
     }, ENROLL_TIMEOUT_MS);
 
-    return cleanup;
-  }, [user, cleanup, scada]);
+    return () => {
+      socket.off('ENROLL_SUCCESS', handleSuccess);
+      socket.off('ENROLL_ERROR', handleError);
+      socket.off('ENROLL_STEP_DONE', handleStepDone);
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      if (progressRef.current) { cancelAnimationFrame(progressRef.current); progressRef.current = null; }
+      if (!doneRef.current) socket.emit('FINGERPRINT_ENROLL_CANCEL');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const handleClose = useCallback(() => {
-    cleanup();
+    if (autoCloseRef.current) { clearTimeout(autoCloseRef.current); autoCloseRef.current = null; }
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (progressRef.current) { cancelAnimationFrame(progressRef.current); progressRef.current = null; }
+    if (!doneRef.current) {
+      const socket = scada.getSocket?.();
+      if (socket?.connected) socket.emit('FINGERPRINT_ENROLL_CANCEL');
+    }
     onClose();
-  }, [cleanup, onClose]);
+  }, [onClose, scada]);
 
   return (
     <Dialog open={!!user} onClose={handleClose} maxWidth="xs" fullWidth slotProps={{ paper: { sx: { borderRadius: 3, background: 'linear-gradient(180deg, #0f1923 0%, #152238 50%, #0d1520 100%)', border: `1px solid ${alpha('#65B5FF', 0.2)}`, overflow: 'hidden' } } }}>
@@ -963,8 +1058,18 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
             <Typography variant="h6" sx={{ color: '#E3F2FD', fontWeight: 700, mb: 0.5, textAlign: 'center' }}>
               Đăng ký vân tay
             </Typography>
-            <Typography variant="body2" sx={{ color: alpha('#B3D9FF', 0.7), textAlign: 'center', mb: 3 }}>
-              Nhân viên <b>{user?.fullname}</b> vui lòng đặt ngón tay lên cảm biến (cần quét 2 lần).
+            <Typography variant="body2" sx={{ color: alpha('#B3D9FF', 0.7), textAlign: 'center', mb: 3, height: 40 }}>
+              {enrollStep === 1 ? (
+                <>
+                  Nhân viên <b>{user?.fullname}</b> vui lòng đặt ngón tay lên cảm biến.<br />
+                  <i>Đang chờ lần quét đầu tiên...</i>
+                </>
+              ) : (
+                <>
+                  <b style={{ color: '#66BB6A' }}>Lần 1 thành công!</b><br />
+                  Hãy nhấc tay ra và <b>đặt lại lần 2</b> để xác nhận.
+                </>
+              )}
             </Typography>
             <Box sx={{ width: '100%', px: 2 }}>
               <LinearProgress variant="determinate" value={progress} sx={{ height: 4, borderRadius: 2, backgroundColor: alpha('#fff', 0.06), '& .MuiLinearProgress-bar': { background: 'linear-gradient(90deg, #1976D2, #64B5F6)' } }} />

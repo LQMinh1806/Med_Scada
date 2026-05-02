@@ -26,8 +26,9 @@ import { io } from 'socket.io-client';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 
-// Backend Socket.io URL (same origin as API, or configurable)
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+// FIX: Align socket URL fallback with useOpcUaSocket.js (empty string = same origin via Vite proxy)
+// Previous code used `window.location.origin` which caused duplicate connections behind reverse proxies.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? '';
 
 const FINGERPRINT_TIMEOUT_MS = 30_000;
 
@@ -97,11 +98,8 @@ const FingerprintModal = memo(function FingerprintModal({ open, onClose, onSucce
       return;
     }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setStatus(FP_STATUS.WAITING);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProgress(100);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setErrorMsg('');
 
     // Connect to Socket.io
@@ -119,6 +117,11 @@ const FingerprintModal = memo(function FingerprintModal({ open, onClose, onSucce
     socket.on('connect_error', (err) => {
       console.error('[Fingerprint] Socket connect error:', err.message);
       setErrorMsg('Không thể kết nối máy chủ.');
+      setStatus(FP_STATUS.ERROR);
+    });
+    socket.on('LOGIN_ERROR', (data) => {
+      const message = String(data?.message || 'Không thể bắt đầu phiên đăng nhập vân tay.');
+      setErrorMsg(message);
       setStatus(FP_STATUS.ERROR);
     });
 
@@ -139,12 +142,16 @@ const FingerprintModal = memo(function FingerprintModal({ open, onClose, onSucce
 
           // Set HttpOnly cookie via dedicated endpoint so all subsequent API calls are authenticated
           const API = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
-          await fetch(`${API}/auth/fingerprint-session`, {
+          const response = await fetch(`${API}/auth/fingerprint-session`, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ token: data.token }),
           });
+          if (!response.ok) {
+            const result = await response.json().catch(() => null);
+            throw new Error(result?.message || 'Fingerprint session exchange failed.');
+          }
 
           scada.setCurrentUser({
             id: data.user.id,
@@ -152,6 +159,7 @@ const FingerprintModal = memo(function FingerprintModal({ open, onClose, onSucce
             fullname: data.user.fullname,
             role: data.user.role,
             active: data.user.active,
+            stationId: data.user.stationId ?? null,
           });
 
           if (typeof scada.hydratePersistedData === 'function') {
@@ -159,6 +167,7 @@ const FingerprintModal = memo(function FingerprintModal({ open, onClose, onSucce
           }
 
           scada.setIsAuthenticated(true);
+          if (typeof scada.reconnectSocket === 'function') scada.reconnectSocket();
 
           setTimeout(() => onSuccess(), 800);
         } catch (err) {
@@ -511,6 +520,7 @@ const LoginPage = memo(function LoginPage({ scada, onLogin }) {
           fullname: result.user.fullname,
           role: result.user.role,
           active: result.user.active,
+          stationId: result.user.stationId ?? null,
         });
 
         if (typeof scada.hydratePersistedData === 'function') {
@@ -518,6 +528,7 @@ const LoginPage = memo(function LoginPage({ scada, onLogin }) {
         }
 
         scada.setIsAuthenticated(true);
+        if (typeof scada.reconnectSocket === 'function') scada.reconnectSocket();
         onLogin();
       } catch {
         setError('Không kết nối được máy chủ xác thực.');

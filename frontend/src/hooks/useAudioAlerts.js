@@ -1,4 +1,4 @@
-import { useCallback, useRef, useMemo, useState } from 'react';
+import { useCallback, useRef, useMemo, useState, useEffect } from 'react';
 
 /**
  * Audio alert system for SCADA medical operations.
@@ -15,9 +15,18 @@ export default function useAudioAlerts() {
       audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
+      void audioCtxRef.current.resume().catch(() => {});
     }
     return audioCtxRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        void audioCtxRef.current.close().catch(() => {});
+      }
+      audioCtxRef.current = null;
+    };
   }, []);
 
   /**
@@ -29,24 +38,35 @@ export default function useAudioAlerts() {
     if (!enabled) return;
     try {
       const ctx = getAudioContext();
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = vol ?? volume;
-      gainNode.connect(ctx.destination);
-
+      const effectiveVol = vol ?? volume;
       let startTime = ctx.currentTime;
 
       for (const note of notes) {
+        // FIX: Create a per-note GainNode so envelopes don't corrupt each other
+        // and disconnect when done to prevent audio-node memory leak.
+        const noteGain = ctx.createGain();
+        noteGain.connect(ctx.destination);
+
         const osc = ctx.createOscillator();
         osc.type = note.type || 'sine';
         osc.frequency.value = note.freq;
-        osc.connect(gainNode);
+        osc.connect(noteGain);
+
+        // Envelope for smooth attack/release
+        const safeAttack = Math.min(0.02, note.duration * 0.15);
+        const safeRelease = Math.min(0.02, note.duration * 0.15);
+        noteGain.gain.setValueAtTime(0, startTime);
+        noteGain.gain.linearRampToValueAtTime(effectiveVol, startTime + safeAttack);
+        noteGain.gain.linearRampToValueAtTime(0, startTime + note.duration - safeRelease);
+
         osc.start(startTime);
         osc.stop(startTime + note.duration);
 
-        // Envelope for smooth attack/release
-        gainNode.gain.setValueAtTime(0, startTime);
-        gainNode.gain.linearRampToValueAtTime(vol ?? volume, startTime + 0.02);
-        gainNode.gain.linearRampToValueAtTime(0, startTime + note.duration - 0.02);
+        // FIX: Disconnect audio nodes after playback to prevent accumulation
+        osc.onended = () => {
+          osc.disconnect();
+          noteGain.disconnect();
+        };
 
         startTime += note.duration + 0.05;
       }

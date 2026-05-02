@@ -479,9 +479,13 @@ async function writePulse(nodeId) {
 let commandQueue = Promise.resolve();
 
 function enqueueCommand(taskFn) {
-  const next = commandQueue.then(taskFn).catch((err) => { throw err; });
-  commandQueue = next.catch(() => {}); // catch internally so failures don't block subsequent commands
-  return next;
+  // FIX: Separate the caller's result promise from the internal chain.
+  // The chain always resolves (via internal catch) so subsequent commands can run,
+  // while the caller's promise reflects the actual success/failure of their command.
+  let resolve, reject;
+  const callerPromise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  commandQueue = commandQueue.then(() => taskFn().then(resolve, reject)).catch(() => {}); // ensure chain never rejects
+  return callerPromise;
 }
 
 /**

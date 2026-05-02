@@ -23,6 +23,7 @@ const StationControlCard = memo(function StationControlCard({
   hasStatSpecimen,
   disableActions = false,
   queueInfo = null,
+  currentUser = null,
 }) {
   const ledColor = isCurrent ? '#0BDF50' : isTarget ? '#1976D2' : '#868685';
   const ledGlow = 'none';
@@ -33,14 +34,19 @@ const StationControlCard = memo(function StationControlCard({
   const handleCall = useCallback(() => onCall(station.id), [onCall, station.id]);
   const handleDispatch = useCallback(() => onDispatchRequest(station), [onDispatchRequest, station]);
 
+  // --- Location-based RBAC logic ---
+  const isOperator = currentUser?.role === 'operator' && currentUser?.stationId;
+  // Operator ONLY allowed to CALL their own station
+  const isCallRestricted = isOperator && currentUser.stationId !== station.id;
+  // Operator ONLY allowed to DISPATCH to other stations (cannot dispatch to self)
+  const isDispatchRestricted = isOperator && currentUser.stationId === station.id;
+
   // --- Queue-aware disable logic ---
-  // Disable CALL if station already has any entry in the queue
-  const isCallDisabled = disableActions || Boolean(queueInfo);
-  // Disable DISPATCH if station is queued AND not a STAT-upgradeable scenario
-  // Allow: no queue entry, OR queue has only ROUTINE and current specimen is STAT
+  const isCallDisabled = disableActions || Boolean(queueInfo) || isCallRestricted;
   const isDispatchDisabled =
     !canDispatch ||
     disableActions ||
+    isDispatchRestricted ||
     (queueInfo && !(queueInfo.hasRoutineOnly && hasStatSpecimen));
 
   const isQueued = Boolean(queueInfo);
@@ -137,8 +143,8 @@ const StationControlCard = memo(function StationControlCard({
 
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 1 }}>
         <Tooltip
-          title={isQueued ? 'Trạm đã có lệnh trong hàng chờ' : ''}
-          disableHoverListener={!isQueued}
+          title={isCallRestricted ? 'Bạn chỉ có quyền gọi cabin về trạm của mình' : isQueued ? 'Trạm đã có lệnh trong hàng chờ' : ''}
+          disableHoverListener={!isCallRestricted && !isQueued}
         >
           <span>
             <Button
@@ -155,11 +161,13 @@ const StationControlCard = memo(function StationControlCard({
         </Tooltip>
         <Tooltip
           title={
-            isQueued && !(queueInfo.hasRoutineOnly && hasStatSpecimen)
-              ? 'Trạm đã có lệnh trong hàng chờ'
-              : ''
+            isDispatchRestricted
+              ? 'Bạn không thể dispatch đến trạm của chính mình'
+              : isQueued && !(queueInfo.hasRoutineOnly && hasStatSpecimen)
+                ? 'Trạm đã có lệnh trong hàng chờ'
+                : ''
           }
-          disableHoverListener={!isQueued || (queueInfo?.hasRoutineOnly && hasStatSpecimen)}
+          disableHoverListener={!isDispatchRestricted && (!isQueued || (queueInfo?.hasRoutineOnly && hasStatSpecimen))}
         >
           <span>
             <Button

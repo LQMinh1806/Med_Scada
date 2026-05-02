@@ -282,6 +282,20 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
     return { slaRate, measured, throughputPoints, readinessRate };
   }, [stations, transportedSpecimens]);
 
+  const queueByStationId = useMemo(() => {
+    if (!Array.isArray(queue) || queue.length === 0) return {};
+    const map = {};
+    queue.forEach((item, idx) => {
+      if (!item?.stationId || map[item.stationId]) return;
+      map[item.stationId] = {
+        position: idx + 1,
+        priority: item.priority,
+        type: item.type,
+      };
+    });
+    return map;
+  }, [queue]);
+
   return (
     <Fade in timeout={400}>
       <Box sx={{ display: 'grid', gap: 0.72, transform: { xs: 'translateX(4px)', md: 'translateX(40px)' } }}>
@@ -354,12 +368,7 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
 
               <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 0.9 }}>
                 {stations.map((station) => {
-                  // Find the first queue entry for this station
-                  const queueIdx = queue ? queue.findIndex((item) => item.stationId === station.id) : -1;
-                  const queueItem = queueIdx >= 0 ? queue[queueIdx] : null;
-                  const queueInfo = queueItem
-                    ? { position: queueIdx + 1, priority: queueItem.priority, type: queueItem.type }
-                    : null;
+                  const queueInfo = queueByStationId[station.id] || null;
                   return (
                     <StationStatusChip key={station.id} station={station} queueInfo={queueInfo} />
                   );

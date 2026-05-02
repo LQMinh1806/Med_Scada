@@ -97,6 +97,12 @@ export default function useScada() {
   const maintenanceRef = useRef(maintenanceMode);
   const animatingRef = useRef(animating);
   const syncChannelRef = useRef(null);
+  const lastAppliedSyncTsRef = useRef(0);
+  // FIX: Track whether initial robot state hydration has been done.
+  // After the first hydration, subsequent SSE/polling syncs should NOT
+  // overwrite robotState.status — otherwise the user's E-STOP reset
+  // action gets reverted when the server log still shows ESTOP status.
+  const initialHydrationDoneRef = useRef(false);
   const apiRequest = useScadaApi({ setCurrentUser, setIsAuthenticated });
 
   // === Queue scheduler ===
@@ -133,6 +139,11 @@ export default function useScada() {
   useEffect(() => { currentSpecimenRef.current = currentSpecimen; }, [currentSpecimen]);
   useEffect(() => { maintenanceRef.current = maintenanceMode; }, [maintenanceMode]);
   useEffect(() => { animatingRef.current = animating; }, [animating]);
+  useEffect(() => {
+    if (!isAuthenticated) {
+      lastAppliedSyncTsRef.current = 0;
+    }
+  }, [isAuthenticated]);
 
   // Build a serializable queue for cross-tab sync (strips metadata to keep payload small)
   const buildQueueSnapshot = useCallback(() => {
@@ -210,6 +221,10 @@ export default function useScada() {
       snapshot,
     };
 
+    // Primary: broadcast via Socket.io to all devices on the network
+    opc.emitStateSync(payload);
+
+    // Secondary: BroadcastChannel for same-browser tab sync (faster for local tabs)
     try {
       if (syncChannelRef.current) {
         syncChannelRef.current.postMessage(payload);
@@ -223,6 +238,20 @@ export default function useScada() {
     } catch {
       // Ignore localStorage unavailability.
     }
+  }, [opc]);
+
+  const shouldApplySyncPayload = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object') return false;
+    const payloadTs = Number(payload.ts);
+    if (Number.isFinite(payloadTs) && payloadTs > 0) {
+      if (payloadTs <= lastAppliedSyncTsRef.current) return false;
+      lastAppliedSyncTsRef.current = payloadTs;
+      return true;
+    }
+
+    // Fallback for malformed/no timestamp payloads: accept but advance marker.
+    lastAppliedSyncTsRef.current = Date.now();
+    return true;
   }, []);
 
   // === Logging ===
@@ -267,6 +296,8 @@ export default function useScada() {
           fullname: user.fullname,
           role: user.role,
           active: Boolean(user.active),
+          fingerprintId: user.fingerprintId ?? null,
+          stationId: user.stationId ?? null,
           password: '',
         }));
         usersRef.current = mappedUsers;
@@ -282,6 +313,12 @@ export default function useScada() {
         }));
         setSystemLogs(logs);
 
+        // FIX: Only hydrate robot state from server logs on INITIAL bootstrap.
+        // Subsequent SSE/polling syncs must NOT overwrite robotState.status,
+        // because the user's local actions (e.g. E-STOP reset) are the source
+        // of truth — server logs may lag behind and cause state reversion.
+        const isInitialHydration = !initialHydrationDoneRef.current;
+
         const latestMaintenanceLog = logs.find((log) => log.type === 'maintenance');
         const maintenanceFromLog = parseMaintenanceEvent(latestMaintenanceLog?.event);
         if (maintenanceFromLog) {
@@ -296,32 +333,37 @@ export default function useScada() {
             };
           });
 
-          setRobotState((prev) => ({
-            ...prev,
-            status: maintenanceFromLog.enabled
-              ? 'Bảo trì'
-              : (prev.status === 'Bảo trì' ? 'Sẵn sàng' : prev.status),
-          }));
+          if (isInitialHydration) {
+            setRobotState((prev) => ({
+              ...prev,
+              status: maintenanceFromLog.enabled
+                ? 'Bảo trì'
+                : (prev.status === 'Bảo trì' ? 'Sẵn sàng' : prev.status),
+            }));
+          }
         }
 
-        const latestRobotStateLog = logs.find((log) => log.type === 'state' || String(log.event || '').startsWith('[ROBOT_STATE]'));
-        const robotFromLog = parseRobotStateEvent(latestRobotStateLog?.event);
-        if (robotFromLog && !animatingRef.current) {
-          setRobotState((prev) => {
-            const nextIndex = robotFromLog.index ?? prev.index;
-            const point = RAIL_POINTS[nextIndex] || RAIL_POINTS[prev.index] || { x: prev.x, y: prev.y };
-            const nextX = robotFromLog.x ?? point.x;
-            const nextY = robotFromLog.y ?? point.y;
+        if (isInitialHydration) {
+          const latestRobotStateLog = logs.find((log) => log.type === 'state' || String(log.event || '').startsWith('[ROBOT_STATE]'));
+          const robotFromLog = parseRobotStateEvent(latestRobotStateLog?.event);
+          if (robotFromLog && !animatingRef.current) {
+            setRobotState((prev) => {
+              const nextIndex = robotFromLog.index ?? prev.index;
+              const point = RAIL_POINTS[nextIndex] || RAIL_POINTS[prev.index] || { x: prev.x, y: prev.y };
+              const nextX = robotFromLog.x ?? point.x;
+              const nextY = robotFromLog.y ?? point.y;
 
-            return {
-              ...prev,
-              status: robotFromLog.status,
-              index: nextIndex,
-              x: nextX,
-              y: nextY,
-              targetId: robotFromLog.targetId || prev.targetId,
-            };
-          });
+              return {
+                ...prev,
+                status: robotFromLog.status,
+                index: nextIndex,
+                x: nextX,
+                y: nextY,
+                targetId: robotFromLog.targetId || prev.targetId,
+              };
+            });
+          }
+          initialHydrationDoneRef.current = true;
         }
       }
 
@@ -372,7 +414,7 @@ export default function useScada() {
     });
   }, []);
 
-  const addUser = useCallback(({ username, password, fullname, role }) => {
+  const addUser = useCallback(({ username, password, fullname, role, stationId = null }) => {
     const normalizedUsername = (username || '').trim();
     const normalizedFullname = (fullname || '').trim();
     const normalizedRole = role || USER_ROLES.OPERATOR;
@@ -399,6 +441,7 @@ export default function useScada() {
         password,
         fullname: normalizedFullname,
         role: normalizedRole,
+        stationId: normalizedRole === USER_ROLES.OPERATOR ? stationId : null,
       }),
     })
       .then((result) => {
@@ -470,19 +513,49 @@ export default function useScada() {
     addLog(`Đã cập nhật vai trò ${username} -> ${role}`, 'info');
   }, [addLog, apiRequest, setUsersAndSyncRef]);
 
+  const updateUserStation = useCallback((username, stationId) => {
+    setUsersAndSyncRef(prev =>
+      prev.map(user => (user.username === username ? { ...user, stationId: stationId || null } : user))
+    );
+
+    apiRequest(`/users/${encodeURIComponent(username)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ stationId: stationId || '' }),
+    }).catch((error) => {
+      addLog(`Lưu trạm cho ${username} thất bại: ${error.message}`, 'error');
+    });
+
+    addLog(`Đã cập nhật trạm của ${username} -> ${stationId || 'Tất cả'}`, 'info');
+  }, [addLog, apiRequest, setUsersAndSyncRef]);
+
   const removeUser = useCallback((username) => {
-    const previousUsers = usersRef.current;
+    // FIX: Capture only the specific user being deleted, not the entire array.
+    // Restoring the full stale snapshot on failure would overwrite concurrent updates.
+    const deletedUser = usersRef.current.find(user => user.username === username);
     setUsersAndSyncRef(prev => prev.filter(user => user.username !== username));
 
     apiRequest(`/users/${encodeURIComponent(username)}`, {
       method: 'DELETE',
     }).catch((error) => {
-      setUsersAndSyncRef(previousUsers);
+      // FIX: Re-insert only the deleted user instead of reverting to stale snapshot
+      if (deletedUser) {
+        setUsersAndSyncRef(prev => {
+          // Avoid double-insert if user somehow reappeared
+          if (prev.some(u => u.username === deletedUser.username)) return prev;
+          return [deletedUser, ...prev];
+        });
+      }
       addLog(`Xóa tài khoản ${username} thất bại: ${error.message}`, 'error');
     });
 
     addLog(`Đã xóa tài khoản ${username}`, 'info');
   }, [addLog, apiRequest, setUsersAndSyncRef]);
+
+  const updateUserFingerprintId = useCallback((userId, fingerprintId) => {
+    setUsersAndSyncRef(prev =>
+      prev.map(user => (user.id === userId ? { ...user, fingerprintId } : user))
+    );
+  }, [setUsersAndSyncRef]);
 
   // === Specimen management (with priority support) ===
   const registerScannedSpecimen = useCallback((specimen) => {
@@ -705,7 +778,7 @@ export default function useScada() {
     const plcStationNumber = parseInt(target.id.split('-')[1], 10);
     const isStat = metadata?.specimenRecord?.priority === PRIORITY.STAT;
 
-    opc.callCabin(plcStationNumber, isStat).then((res) => {
+    opc.callCabin(plcStationNumber, isStat, target.id, action).then((res) => {
       if (!res?.ok) {
         addLog(`Lỗi gửi lệnh di chuyển tới ${target.name}: ${res?.error || 'Unknown'}`, 'error');
       }
@@ -821,7 +894,7 @@ export default function useScada() {
       if (processQueueRef.current) processQueueRef.current(toIndex);
     });
     return true;
-  }, [addLog, animatePoints, apiRequest, buildSyncSnapshot, publishSyncSnapshot, stopAnimation]);
+  }, [addLog, animatePoints, apiRequest, buildSyncSnapshot, publishSyncSnapshot, stopAnimation, opc]);
 
   // === Queue processor: dequeue and execute next task ===
   const processNextQueueTask = useCallback((currentStationIndex) => {
@@ -983,40 +1056,44 @@ export default function useScada() {
       queue: [],
       cabinDirection: DIRECTION.IDLE,
     }));
-  }, [addLog, buildSyncSnapshot, clearQueue, publishSyncSnapshot, stopAnimation, queueRef]);
+  }, [addLog, buildSyncSnapshot, clearQueue, publishSyncSnapshot, stopAnimation, queueRef, opc]);
 
-  const acknowledgeTask = useCallback(async () => {
-    // --- KÍCH HOẠT LỆNH RESET LỖI VÀ NHẢ E-STOP XUỐNG PLC ---
-    // Best-effort: attempt PLC commands but always reset UI state.
-    // In simulation mode (no Kepware), PLC calls will fail — that's expected.
-    try {
-      const estopRes = await opc.releaseEStop();
-      if (!estopRes?.ok) {
-        addLog(`Cảnh báo PLC: Nhả E-Stop không thành công (${estopRes?.error || 'PLC offline'})`, 'error');
+  const acknowledgeTask = useCallback(() => {
+    // FIX: Restore UI state IMMEDIATELY — don't block behind PLC socket timeouts.
+    // Previously, two sequential `await opc.*()` calls (each with 5s timeout) plus
+    // a 500ms setTimeout caused a ~10.5s delay before the UI recovered.
+    // PLC commands are now fire-and-forget in the background.
+
+    // ── 1. Instant UI recovery ──────────────────────────────────────────
+    setRobotState(prev => ({ ...prev, status: 'Sẵn sàng' }));
+    addLog('Hệ thống đã được khôi phục sau Dừng khẩn cấp', 'success');
+    addLog(
+      `[ROBOT_STATE] status=READY index=${robotStateRef.current.index} target=${robotStateRef.current.targetId} x=${Math.round(robotStateRef.current.x)} y=${Math.round(robotStateRef.current.y)}`,
+      'state'
+    );
+    publishSyncSnapshot(buildSyncSnapshot({ status: 'Sẵn sàng' }));
+
+    // ── 2. Background PLC commands (fire-and-forget) ────────────────────
+    // Release E-Stop first, then send reset pulse after a short gap.
+    // Failures are logged but never block the UI.
+    opc.releaseEStop().then((res) => {
+      if (!res?.ok) {
+        addLog(`Cảnh báo PLC: Nhả E-Stop không thành công (${res?.error || 'PLC offline'})`, 'error');
       }
-    } catch (err) {
+    }).catch((err) => {
       addLog(`Cảnh báo PLC: ${err?.message || 'Không kết nối được'}`, 'error');
-    }
+    });
 
-    setTimeout(async () => {
-      try {
-        const resetRes = await opc.resetError();
-        if (!resetRes?.ok) {
-          addLog(`Cảnh báo PLC: Reset lỗi không thành công (${resetRes?.error || 'PLC offline'})`, 'error');
+    // Small delay between release and reset to let PLC process the state change
+    setTimeout(() => {
+      opc.resetError().then((res) => {
+        if (!res?.ok) {
+          addLog(`Cảnh báo PLC: Reset lỗi không thành công (${res?.error || 'PLC offline'})`, 'error');
         }
-      } catch (err) {
+      }).catch((err) => {
         addLog(`Cảnh báo PLC: ${err?.message || 'Không kết nối được'}`, 'error');
-      }
-
-      // Always restore UI state regardless of PLC response
-      setRobotState(prev => ({ ...prev, status: 'Sẵn sàng' }));
-      addLog('Hệ thống đã được khôi phục sau Dừng khẩn cấp', 'success');
-      addLog(
-        `[ROBOT_STATE] status=READY index=${robotStateRef.current.index} target=${robotStateRef.current.targetId} x=${Math.round(robotStateRef.current.x)} y=${Math.round(robotStateRef.current.y)}`,
-        'state'
-      );
-      publishSyncSnapshot(buildSyncSnapshot({ status: 'Sẵn sàng' }));
-    }, 500);
+      });
+    }, 300);
   }, [addLog, buildSyncSnapshot, publishSyncSnapshot, opc]);
 
   // === Cleanup ===
@@ -1077,8 +1154,44 @@ export default function useScada() {
       if (eventSource) {
         eventSource.close();
       }
+      // Reset so next login re-hydrates robot state from server logs
+      initialHydrationDoneRef.current = false;
     };
   }, [hydratePersistedData, isAuthenticated]);
+
+  // ── Cross-device sync via Socket.io ────────────────────────────────
+  // Attach callback refs so the socket hook can invoke our sync handlers
+  // whenever another device broadcasts state or data changes.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      opc.onStateSyncRef.current = null;
+      opc.onDataSyncRef.current = null;
+      return;
+    }
+
+    // Handle incoming UI state snapshots from other devices
+    opc.onStateSyncRef.current = (data) => {
+      if (!data || typeof data !== 'object') return;
+      // Ignore our own echoed messages
+      if (data.sourceTabId === SCADA_TAB_ID) return;
+      if (data.type === 'snapshot' && shouldApplySyncPayload(data)) {
+        applySyncSnapshot(data.snapshot);
+      }
+    };
+
+    // Handle incoming data change notifications from other devices/server
+    opc.onDataSyncRef.current = (data) => {
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'sync-required') {
+        hydratePersistedData({ syncStations: false });
+      }
+    };
+
+    return () => {
+      opc.onStateSyncRef.current = null;
+      opc.onDataSyncRef.current = null;
+    };
+  }, [isAuthenticated, applySyncSnapshot, shouldApplySyncPayload, hydratePersistedData, opc]);
 
   // Keep tabs synced instantly in the same browser session.
   useEffect(() => {
@@ -1092,7 +1205,7 @@ export default function useScada() {
     channel.onmessage = (event) => {
       const payload = event?.data;
       if (!payload || payload.sourceTabId === SCADA_TAB_ID) return;
-      if (payload.type === 'snapshot') {
+      if (payload.type === 'snapshot' && shouldApplySyncPayload(payload)) {
         applySyncSnapshot(payload.snapshot);
       }
     };
@@ -1103,7 +1216,7 @@ export default function useScada() {
         syncChannelRef.current = null;
       }
     };
-  }, [applySyncSnapshot, isAuthenticated]);
+  }, [applySyncSnapshot, isAuthenticated, shouldApplySyncPayload]);
 
   // Fallback sync path via localStorage for environments without BroadcastChannel.
   useEffect(() => {
@@ -1114,7 +1227,7 @@ export default function useScada() {
       try {
         const payload = JSON.parse(event.newValue);
         if (!payload || payload.sourceTabId === SCADA_TAB_ID) return;
-        if (payload.type === 'snapshot') {
+        if (payload.type === 'snapshot' && shouldApplySyncPayload(payload)) {
           applySyncSnapshot(payload.snapshot);
         }
       } catch {
@@ -1124,7 +1237,7 @@ export default function useScada() {
 
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [applySyncSnapshot, isAuthenticated]);
+  }, [applySyncSnapshot, isAuthenticated, shouldApplySyncPayload]);
 
   // === Memoized return value ===
   return useMemo(() => ({
@@ -1142,7 +1255,9 @@ export default function useScada() {
     addUser,
     toggleUserActive,
     updateUserRole,
+    updateUserStation,
     removeUser,
+    updateUserFingerprintId,
     // Map data
     railPoints: RAIL_POINTS,
     animating,
@@ -1168,6 +1283,9 @@ export default function useScada() {
     cabinDirection,
     cancelQueueItem,
     clearQueue,
+    // Socket access
+    getSocket: opc.getSocket,
+    reconnectSocket: opc.reconnectSocket,
   }), [
     isAuthenticated,
     currentUser,
@@ -1177,7 +1295,9 @@ export default function useScada() {
     addUser,
     toggleUserActive,
     updateUserRole,
+    updateUserStation,
     removeUser,
+    updateUserFingerprintId,
     animating,
     animPos,
     moveId,
@@ -1198,5 +1318,7 @@ export default function useScada() {
     cabinDirection,
     cancelQueueItem,
     clearQueue,
+    opc.getSocket,
+    opc.reconnectSocket,
   ]);
 }

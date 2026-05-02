@@ -11,6 +11,7 @@ import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import os from 'os';
+import fs from 'fs';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -94,6 +95,8 @@ function mapUserForApi(user) {
     fullname: user.fullname,
     role: toApiRole(user.role),
     active: user.active,
+    fingerprintId: user.fingerprintId ?? null,
+    stationId: user.stationId ?? null,
     createdAt: user.createdAt,
   };
 }
@@ -123,6 +126,7 @@ const io = new SocketIOServer(httpServer, {
 // Track pending fingerprint enrollment sessions
 // Map<socketId, { userId, username, status, timer }>
 const pendingEnrollments = new Map();
+let activeFingerprintLoginSocketId = null;
 
 // ── Socket.io authentication middleware ──────────────────────────────────────
 // Allows unauthenticated connections (needed for fingerprint login waiting room)
@@ -143,6 +147,7 @@ io.use((socket, next) => {
       sub: payload.sub,
       username: payload.username,
       role: String(payload.role || '').toLowerCase(),
+      stationId: payload.stationId ?? null,
     };
   } catch {
     socket.data.user = null;
@@ -154,11 +159,69 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[Socket.io] New client connected! ID: ${socket.id} | Origin: ${socket.handshake.headers.origin} | User: ${socket.data.user?.username || 'Anonymous'}`);
 
+  function ensureSocketPermission(ack, requiredRole = null) {
+    if (!socket.data.user?.sub) {
+      if (typeof ack === 'function') ack({ ok: false, error: 'Authentication required.' });
+      return false;
+    }
+    if (requiredRole && socket.data.user.role !== requiredRole) {
+      if (typeof ack === 'function') ack({ ok: false, error: 'Insufficient permission.' });
+      return false;
+    }
+    return true;
+  }
+
   // ── OPC UA: Push latest PLC snapshot to newly connected client ──────
   emitSnapshotToSocket(socket);
 
+  // ── Cross-device state synchronization ──────────────────────────────
+  // Relay UI state snapshots (robot position, queue, maintenance, etc.)
+  // from one client to ALL other connected clients across all devices.
+  // Uses socket.broadcast (not rooms) because sockets may connect before
+  // login — room-based approach is unreliable. Frontend-side filtering
+  // (onStateSyncRef is null when not authenticated) handles security.
+  socket.on('scada:stateSync', (data) => {
+    socket.broadcast.emit('scada:stateSync', {
+      ...data,
+      _sourceSocketId: socket.id,
+      _ts: Date.now(),
+    });
+  });
+
+  // Relay data mutation notifications (new logs, specimens, transports)
+  // so other devices can update their local state immediately.
+  socket.on('scada:dataSync', (data) => {
+    socket.broadcast.emit('scada:dataSync', {
+      ...data,
+      _sourceSocketId: socket.id,
+      _ts: Date.now(),
+    });
+  });
+
   // ── OPC UA: PLC command handlers from Frontend ─────────────────────
   socket.on('plc:callCabin', async (data, ack) => {
+    if (!ensureSocketPermission(ack)) return;
+
+    // ── Location-based RBAC: operators can only command their assigned station ──
+    if (socket.data.user?.role === 'operator' && socket.data.user?.stationId) {
+      const requestedStationId = data?.stationId;
+
+      if (data?.action === 'DISPATCH') {
+        // DISPATCH: Cho phép đi mọi trạm TRỪ trạm của chính mình
+        if (requestedStationId === socket.data.user.stationId) {
+          if (typeof ack === 'function') ack({ ok: false, error: 'Bạn không thể điều cabin đến trạm của chính mình.' });
+          return;
+        }
+      } else {
+        // CALL (hoặc mặc định): Chỉ được phép tại trạm của mình
+        if (requestedStationId && requestedStationId !== socket.data.user.stationId) {
+          console.warn(`[Socket.io] RBAC denied callCabin: operator ${socket.data.user.username} (station=${socket.data.user.stationId}) tried station=${requestedStationId}`);
+          if (typeof ack === 'function') ack({ ok: false, error: 'Bạn không có quyền gọi cabin ở trạm này.' });
+          return;
+        }
+      }
+    }
+
     console.log(`[Socket.io] callCabin from ${socket.data.user?.username || socket.id}:`, data);
     try {
       const stationNumber = Number(data?.stationNumber);
@@ -176,6 +239,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('plc:eStop', async (data, ack) => {
+    if (!ensureSocketPermission(ack)) return;
     try {
       const active = Boolean(data?.active);
       await setEStop(active);
@@ -187,6 +251,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('plc:reset', async (_data, ack) => {
+    if (!ensureSocketPermission(ack)) return;
     try {
       await resetError();
       if (typeof ack === 'function') ack({ ok: true });
@@ -197,6 +262,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('plc:maintenance', async (data, ack) => {
+    if (!ensureSocketPermission(ack, 'tech')) return;
     try {
       const active = Boolean(data?.active);
       await setPlcMaintenanceMode(active);
@@ -210,6 +276,11 @@ io.on('connection', (socket) => {
   // ── Fingerprint: login mode ─────────────────────────────────────────
   // Client requests to start fingerprint login mode
   socket.on('FINGERPRINT_LOGIN_WAIT', () => {
+    if (activeFingerprintLoginSocketId && activeFingerprintLoginSocketId !== socket.id) {
+      socket.emit('LOGIN_ERROR', { message: 'Another fingerprint login session is in progress.' });
+      return;
+    }
+    activeFingerprintLoginSocketId = socket.id;
     socket.join('fingerprint-login-waiters');
     console.log(`[Socket.io] ${socket.id} joined fingerprint-login-waiters`);
   });
@@ -217,11 +288,19 @@ io.on('connection', (socket) => {
   // Client cancels fingerprint login wait
   socket.on('FINGERPRINT_LOGIN_CANCEL', () => {
     socket.leave('fingerprint-login-waiters');
+    if (activeFingerprintLoginSocketId === socket.id) {
+      activeFingerprintLoginSocketId = null;
+    }
     console.log(`[Socket.io] ${socket.id} left fingerprint-login-waiters`);
   });
 
   // Client requests to start enrollment (admin must provide userId)
   socket.on('FINGERPRINT_ENROLL_START', (data) => {
+    if (!socket.data.user?.sub || socket.data.user.role !== 'tech') {
+      socket.emit('ENROLL_ERROR', { message: 'Insufficient permission.' });
+      return;
+    }
+
     const { userId, username } = data || {};
     if (!userId) {
       socket.emit('ENROLL_ERROR', { message: 'userId is required.' });
@@ -251,6 +330,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    if (activeFingerprintLoginSocketId === socket.id) {
+      activeFingerprintLoginSocketId = null;
+    }
     const existing = pendingEnrollments.get(socket.id);
     if (existing && existing.timer) clearTimeout(existing.timer);
     pendingEnrollments.delete(socket.id);
@@ -259,21 +341,33 @@ io.on('connection', (socket) => {
 });
 
 function broadcastSyncRequired(reason) {
-  if (!sseClients.size) return;
-
+  const ts = Date.now();
   const payload = JSON.stringify({
     type: 'sync-required',
     reason,
-    ts: Date.now(),
+    ts,
   });
 
-  for (const client of sseClients) {
-    try {
-      client.write(`data: ${payload}\n\n`);
-    } catch {
-      sseClients.delete(client);
+  // Notify via SSE (legacy path)
+  if (sseClients.size) {
+    for (const client of sseClients) {
+      try {
+        client.write(`data: ${payload}\n\n`);
+      } catch {
+        sseClients.delete(client);
+      }
     }
   }
+
+  // Also notify via Socket.io for instant cross-device sync
+  // Uses io.emit (all sockets) instead of room-based emit because
+  // sockets may connect before login and never join a sync room.
+  io.emit('scada:dataSync', {
+    type: 'sync-required',
+    reason,
+    _ts: ts,
+    _sourceSocketId: '__server__',
+  });
 }
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -416,6 +510,12 @@ function requireCsrf(req, res, next) {
     return;
   }
 
+  // FIX: ESP32 fingerprint endpoints use API key auth, not cookies — exempt from CSRF
+  if (req.path.startsWith('/api/fingerprint/')) {
+    next();
+    return;
+  }
+
   if (req.path === '/api/auth/register' && !req.user) {
     next();
     return;
@@ -514,6 +614,18 @@ app.use(express.json({ limit: '1mb' }));
 app.use(optionalAuth);
 app.use(requireCsrf);
 
+// ── Serve built frontend (production / domain access) ─────────────────────
+// When frontend/dist exists, serve it as static files from the backend.
+// This allows Cloudflare Tunnel to point directly to the backend port,
+// eliminating the triple-proxy (Cloudflare → Vite → Backend) that breaks
+// WebSocket connections for cross-device sync.
+const FRONTEND_DIST = path.resolve(__dirname, '..', 'frontend', 'dist');
+const hasFrontendBuild = fs.existsSync(path.join(FRONTEND_DIST, 'index.html'));
+if (hasFrontendBuild) {
+  console.log(`[Server] Serving frontend build from ${FRONTEND_DIST}`);
+  app.use(express.static(FRONTEND_DIST, { index: false }));
+}
+
 app.get('/api/health', (_, res) => {
   res.status(200).json({ ok: true, service: 'scada-backend' });
 });
@@ -571,6 +683,8 @@ app.get('/api/bootstrap', requireAuth, async (_, res) => {
           fullname: true,
           role: true,
           active: true,
+          fingerprintId: true,
+          stationId: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'desc' },
@@ -683,7 +797,7 @@ app.get('/api/bootstrap', requireAuth, async (_, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { username, password, fullname, role = 'operator' } = req.body ?? {};
+    const { username, password, fullname, role = 'operator', stationId = null } = req.body ?? {};
 
     const normalizedUsername = String(username || '').trim().toLowerCase();
     const normalizedFullname = String(fullname || '').trim();
@@ -717,6 +831,11 @@ app.post('/api/auth/register', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(String(password), 12);
 
+    // Normalize stationId: only persist for operators
+    const normalizedStationId = normalizedRole === 'operator' && stationId
+      ? String(stationId).trim()
+      : null;
+
     const createdUser = await prisma.user.create({
       data: {
         username: normalizedUsername,
@@ -724,6 +843,7 @@ app.post('/api/auth/register', async (req, res) => {
         fullname: normalizedFullname,
         role: DB_ROLE[normalizedRole],
         active: true,
+        stationId: normalizedStationId,
       },
       select: {
         id: true,
@@ -731,6 +851,7 @@ app.post('/api/auth/register', async (req, res) => {
         fullname: true,
         role: true,
         active: true,
+        stationId: true,
         createdAt: true,
       },
     });
@@ -779,6 +900,7 @@ app.post('/api/auth/login', async (req, res) => {
         sub: user.id,
         username: user.username,
         role: toApiRole(user.role),
+        stationId: user.stationId ?? null,
       },
       JWT_SECRET,
       {
@@ -796,6 +918,7 @@ app.post('/api/auth/login', async (req, res) => {
         fullname: user.fullname,
         role: toApiRole(user.role),
         active: user.active,
+        stationId: user.stationId ?? null,
       },
     });
   } catch (error) {
@@ -857,6 +980,7 @@ app.get('/api/auth/session', requireAuth, async (req, res) => {
         fullname: true,
         role: true,
         active: true,
+        stationId: true,
       },
     });
 
@@ -902,6 +1026,8 @@ app.get('/api/users', requireAuth, requireRole('tech'), async (_, res) => {
         fullname: true,
         role: true,
         active: true,
+        fingerprintId: true,
+        stationId: true,
         createdAt: true,
       },
       orderBy: { createdAt: 'desc' },
@@ -916,7 +1042,7 @@ app.get('/api/users', requireAuth, requireRole('tech'), async (_, res) => {
 app.patch('/api/users/:username', requireAuth, requireRole('tech'), async (req, res) => {
   try {
     const username = String(req.params.username || '').trim().toLowerCase();
-    const { role, active, fullname } = req.body ?? {};
+    const { role, active, fullname, stationId } = req.body ?? {};
 
     if (!username) {
       return res.status(400).json({ message: 'username is required.' });
@@ -936,6 +1062,13 @@ app.patch('/api/users/:username', requireAuth, requireRole('tech'), async (req, 
         return res.status(400).json({ message: "role must be either 'tech' or 'operator'." });
       }
       data.role = DB_ROLE[normalizedRole];
+      if (data.role === 'TECH') {
+        data.stationId = null;
+      }
+    }
+
+    if (stationId !== undefined && data.role !== 'TECH') {
+      data.stationId = String(stationId).trim() || null;
     }
 
     if (!Object.keys(data).length) {
@@ -951,6 +1084,7 @@ app.patch('/api/users/:username', requireAuth, requireRole('tech'), async (req, 
         fullname: true,
         role: true,
         active: true,
+        stationId: true,
         createdAt: true,
       },
     });
@@ -1324,7 +1458,7 @@ function requireEsp32ApiKey(req, res, next) {
 // ── GET /api/fingerprint/status ─────────────────────────────────────────────
 // Called periodically by ESP32 to know if it should be in MATCH or ENROLL mode.
 app.get('/api/fingerprint/status', requireEsp32ApiKey, (req, res) => {
-  for (const session of pendingEnrollments.values()) {
+  for (const [sid, session] of pendingEnrollments.entries()) {
     if (session.status === 'waiting') {
       return res.json({ mode: 'enroll', userId: session.userId, slotId: session.userId });
     }
@@ -1351,6 +1485,7 @@ app.post('/api/fingerprint/match', requireEsp32ApiKey, async (req, res) => {
         fullname: true,
         role: true,
         active: true,
+        stationId: true,
       },
     });
 
@@ -1368,13 +1503,20 @@ app.post('/api/fingerprint/match', requireEsp32ApiKey, async (req, res) => {
         sub: user.id,
         username: user.username,
         role: toApiRole(user.role),
+        stationId: user.stationId ?? null,
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
 
-    // Emit LOGIN_SUCCESS to all clients waiting for fingerprint login
-    io.to('fingerprint-login-waiters').emit('LOGIN_SUCCESS', {
+    const targetSocketId = activeFingerprintLoginSocketId;
+    if (!targetSocketId || !io.sockets.sockets.has(targetSocketId)) {
+      activeFingerprintLoginSocketId = null;
+      return res.status(409).json({ message: 'No active fingerprint login session.' });
+    }
+
+    // Emit LOGIN_SUCCESS only to the active waiting client
+    io.to(targetSocketId).emit('LOGIN_SUCCESS', {
       token,
       user: {
         id: user.id,
@@ -1382,8 +1524,10 @@ app.post('/api/fingerprint/match', requireEsp32ApiKey, async (req, res) => {
         fullname: user.fullname,
         role: toApiRole(user.role),
         active: user.active,
+        stationId: user.stationId ?? null,
       },
     });
+    activeFingerprintLoginSocketId = null;
 
     console.log(`[Fingerprint] LOGIN_SUCCESS emitted for user: ${user.username}`);
 
@@ -1396,6 +1540,16 @@ app.post('/api/fingerprint/match', requireEsp32ApiKey, async (req, res) => {
     return res.status(500).json({ message: 'Internal server error.' });
   }
 });
+
+// ── POST /api/fingerprint/enroll-step ───────────────────────────────────────
+// Called by ESP32 when step 1 (first scan) is complete.
+app.post('/api/fingerprint/enroll-step', requireEsp32ApiKey, (req, res) => {
+  const { userId, step } = req.body ?? {};
+  console.log(`[Fingerprint] Enroll step ${step} complete for userId=${userId}`);
+  io.emit('ENROLL_STEP_DONE', { userId: Number(userId), step });
+  res.json({ success: true });
+});
+
 
 // ── POST /api/fingerprint/enroll ────────────────────────────────────────────
 // Called by ESP32 after successfully enrolling a new fingerprint into the
@@ -1438,20 +1592,32 @@ app.post('/api/fingerprint/enroll', requireEsp32ApiKey, async (req, res) => {
       },
     });
 
-    // Emit ENROLL_SUCCESS to all clients waiting for enrollment
-    io.to('fingerprint-enroll-waiters').emit('ENROLL_SUCCESS', {
+    // Clear ALL pending enrollments for this userId FIRST (before emitting success)
+    // Use Number() cast to avoid type mismatch between string and number
+    const clearedSocketIds = [];
+    for (const [socketId, enrollment] of pendingEnrollments.entries()) {
+      if (Number(enrollment.userId) === parsedUserId) {
+        if (enrollment.timer) clearTimeout(enrollment.timer);
+        pendingEnrollments.delete(socketId);
+        clearedSocketIds.push(socketId);
+        console.log(`[Fingerprint] Cleared pendingEnrollment for socket ${socketId}, userId=${enrollment.userId}`);
+      }
+    }
+    console.log(`[Fingerprint] Cleared ${clearedSocketIds.length} pending session(s). Remaining: ${pendingEnrollments.size}`);
+
+    // Emit ENROLL_SUCCESS to ALL connected clients (broadcast)
+    // The frontend filters by userId, so broadcasting is safe and avoids room issues
+    io.emit('ENROLL_SUCCESS', {
       userId: updatedUser.id,
       username: updatedUser.username,
       fullname: updatedUser.fullname,
       fingerprintId: updatedUser.fingerprintId,
     });
 
-    // Clear all pending enrollments for this user
-    for (const [socketId, enrollment] of pendingEnrollments.entries()) {
-      if (enrollment.userId === parsedUserId) {
-        if (enrollment.timer) clearTimeout(enrollment.timer);
-        pendingEnrollments.delete(socketId);
-      }
+    // Remove cleared sockets from the room
+    for (const sid of clearedSocketIds) {
+      const sock = io.sockets.sockets.get(sid);
+      if (sock) sock.leave('fingerprint-enroll-waiters');
     }
 
     console.log(`[Fingerprint] ENROLL_SUCCESS for user: ${updatedUser.username}, fpId=${parsedFingerprintId}`);
@@ -1518,6 +1684,15 @@ async function seedDefaultStations() {
   );
 }
 
+// ── SPA catch-all: serve index.html for all non-API routes ────────────────
+// Must be placed AFTER all API routes so /api/* is handled correctly.
+if (hasFrontendBuild) {
+  const indexHtml = path.join(FRONTEND_DIST, 'index.html');
+  app.get('/{*path}', (_req, res) => {
+    res.sendFile(indexHtml);
+  });
+}
+
 async function startServer() {
   await prisma.$connect();
   await seedDefaultStations();
@@ -1549,18 +1724,35 @@ async function startServer() {
 
 startServer().catch(async (error) => {
   console.error('SERVER_START_ERROR', error);
+  // FIX: Close HTTP server if it was started before the error occurred
+  try { httpServer.close(); } catch { /* ignore */ }
   await prisma.$disconnect();
   process.exit(1);
 });
 
-process.on('SIGINT', async () => {
+// FIX: Gracefully close HTTP server before disconnecting services
+// to drain in-flight requests and prevent dangling connections.
+async function gracefulShutdown(signal) {
+  console.log(`[Server] Received ${signal}, shutting down gracefully…`);
+  try {
+    await new Promise((resolve, reject) => {
+      httpServer.close((err) => (err ? reject(err) : resolve()));
+    });
+  } catch { /* ignore close errors */ }
   await shutdownOpcUa();
   await prisma.$disconnect();
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', async () => {
-  await shutdownOpcUa();
-  await prisma.$disconnect();
-  process.exit(0);
+process.on('SIGINT', () => {
+  gracefulShutdown('SIGINT').catch((error) => {
+    console.error('GRACEFUL_SHUTDOWN_ERROR', error);
+    process.exit(1);
+  });
+});
+process.on('SIGTERM', () => {
+  gracefulShutdown('SIGTERM').catch((error) => {
+    console.error('GRACEFUL_SHUTDOWN_ERROR', error);
+    process.exit(1);
+  });
 });

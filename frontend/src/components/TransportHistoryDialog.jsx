@@ -20,21 +20,6 @@ import {
 import { FileDownload } from '@mui/icons-material';
 import { PRIORITY } from '../constants';
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function sanitizeExcelCell(value) {
-  const raw = String(value ?? '');
-  const escaped = escapeHtml(raw);
-  return /^[\t\r\n ]*[=+\-@]/.test(raw) ? `'${escaped}` : escaped;
-}
-
 function buildPriorityLabel(priority) {
   return priority === PRIORITY.STAT ? 'STAT' : 'Routine';
 }
@@ -71,141 +56,56 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
     return records.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   }, [records, page, rowsPerPage]);
 
-  const handleExportExcelReport = useCallback(() => {
+  const handleExportExcelReport = useCallback(async () => {
     if (!hasRecords) return;
 
     const generatedAt = new Date();
     const generatedAtString = generatedAt.toLocaleString('vi-VN');
     const reportDate = generatedAt.toISOString().slice(0, 10);
+    const headerRow = [
+      'STT',
+      'Barcode',
+      'Bệnh nhân',
+      'Xét nghiệm',
+      'Ưu tiên',
+      'Quét',
+      'Dispatch',
+      'Đến nơi',
+      'Từ trạm',
+      'Đến trạm',
+      'Cabin',
+    ];
 
-    const tableRows = records
-      .map((record, index) => {
-        const priorityLabel = buildPriorityLabel(record.priority);
-        const priorityClass = priorityLabel === 'STAT' ? 'priority-stat' : 'priority-routine';
-        return `
-          <tr>
-            <td>${index + 1}</td>
-            <td>${sanitizeExcelCell(record.barcode)}</td>
-            <td>${sanitizeExcelCell(record.patientName)}</td>
-            <td>${sanitizeExcelCell(record.testType)}</td>
-            <td><span class="priority ${priorityClass}">${priorityLabel}</span></td>
-            <td>${sanitizeExcelCell(record.scanTime)}</td>
-            <td>${sanitizeExcelCell(record.dispatchTime)}</td>
-            <td>${sanitizeExcelCell(record.arrivalTime)}</td>
-            <td>${sanitizeExcelCell(record.fromStationName)}</td>
-            <td>${sanitizeExcelCell(record.toStationName)}</td>
-            <td>${sanitizeExcelCell(record.cabinId)}</td>
-          </tr>
-        `;
-      })
-      .join('');
+    const dataRows = records.map((record, index) => ([
+      index + 1,
+      record.barcode,
+      record.patientName,
+      record.testType,
+      buildPriorityLabel(record.priority),
+      record.scanTime,
+      record.dispatchTime,
+      record.arrivalTime,
+      record.fromStationName,
+      record.toStationName,
+      record.cabinId,
+    ]));
 
-    const htmlReport = `
-      <html>
-      <head>
-        <meta charset="UTF-8" />
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            color: #1f2937;
-          }
-          .report-title {
-            font-size: 20px;
-            font-weight: 700;
-            margin-bottom: 6px;
-          }
-          .meta {
-            margin-bottom: 14px;
-            color: #4b5563;
-          }
-          .summary {
-            margin-bottom: 14px;
-            padding: 10px 12px;
-            background: #f3f7fb;
-            border: 1px solid #d6e3ef;
-            border-radius: 6px;
-            width: fit-content;
-          }
-          table {
-            border-collapse: collapse;
-            width: 100%;
-          }
-          th, td {
-            border: 1px solid #cfd8e3;
-            padding: 8px;
-            font-size: 12px;
-            text-align: left;
-          }
-          th {
-            background: #eaf2fa;
-            color: #0f3c61;
-            font-weight: 700;
-          }
-          tr:nth-child(even) {
-            background: #f9fcff;
-          }
-          .priority {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 700;
-          }
-          .priority-stat {
-            background: #fde8e8;
-            color: #b42318;
-          }
-          .priority-routine {
-            background: #eef2f7;
-            color: #334155;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="report-title">BÁO CÁO LỊCH SỬ VẬN CHUYỂN MẪU BỆNH PHẨM</div>
-        <div class="meta">Thời gian xuất: ${escapeHtml(generatedAtString)}</div>
-        <div class="summary">
-          Tổng lượt vận chuyển: <b>${records.length}</b><br/>
-          Mẫu STAT: <b>${statCount}</b><br/>
-          Mẫu Routine: <b>${routineCount}</b>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>STT</th>
-              <th>Barcode</th>
-              <th>Bệnh nhân</th>
-              <th>Xét nghiệm</th>
-              <th>Ưu tiên</th>
-              <th>Quét</th>
-              <th>Dispatch</th>
-              <th>Đến nơi</th>
-              <th>Từ trạm</th>
-              <th>Đến trạm</th>
-              <th>Cabin</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${tableRows}
-          </tbody>
-        </table>
-      </body>
-      </html>
-    `;
+    const sheetRows = [
+      ['BÁO CÁO LỊCH SỬ VẬN CHUYỂN MẪU BỆNH PHẨM'],
+      ['Thời gian xuất', generatedAtString],
+      ['Tổng lượt vận chuyển', records.length],
+      ['Mẫu STAT', statCount],
+      ['Mẫu Routine', routineCount],
+      [],
+      headerRow,
+      ...dataRows,
+    ];
 
-    const blob = new Blob([`\uFEFF${htmlReport}`], {
-      type: 'application/vnd.ms-excel;charset=utf-8;'
-    });
-    const url = URL.createObjectURL(blob);
-
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `bao-cao-van-chuyen-${reportDate}.xls`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
+    const XLSX = await import('xlsx');
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'BaoCaoVanChuyen');
+    XLSX.writeFile(workbook, `bao-cao-van-chuyen-${reportDate}.xlsx`);
   }, [hasRecords, records, routineCount, statCount]);
 
   return (
@@ -331,7 +231,7 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
           disabled={!hasRecords}
           sx={{ fontWeight: 700 }}
         >
-          Xuất báo cáo (.xls)
+          Xuất báo cáo (.xlsx)
         </Button>
       </DialogActions>
     </Dialog>

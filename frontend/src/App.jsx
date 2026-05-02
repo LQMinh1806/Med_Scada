@@ -206,6 +206,7 @@ export default function App() {
             fullname: result.user.fullname,
             role: result.user.role,
             active: result.user.active,
+            stationId: result.user.stationId ?? null,
           });
           setIsAuthenticated(true);
           setCurrentPage((prev) => (prev === ROUTES.LOGIN ? ROUTES.HUB : prev));

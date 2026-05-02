@@ -44,6 +44,11 @@ export default function useOpcUaSocket() {
   // ── Socket.io instance (stable across renders) ─────────────────────────
   const socketRef = useRef(null);
 
+  // ── Callback refs for cross-device sync handlers ───────────────────────
+  // useScada attaches its handler functions here so the socket can invoke them
+  const onStateSyncRef = useRef(null);
+  const onDataSyncRef = useRef(null);
+
   // ── PLC state — updated by server-pushed events ────────────────────────
   const [plcState, setPlcState] = useState({
     currentStation: null,
@@ -58,7 +63,8 @@ export default function useOpcUaSocket() {
   // ── Connect / disconnect lifecycle ─────────────────────────────────────
   useEffect(() => {
     const socket = io(SOCKET_URL, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
+      upgrade: true,
       withCredentials: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -95,6 +101,7 @@ export default function useOpcUaSocket() {
      * kept for granularity if components only need one value.
      */
     socket.on('plc:snapshot', (data) => {
+      if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
         ...prev,
         currentStation: data.currentStation ?? prev.currentStation,
@@ -110,6 +117,7 @@ export default function useOpcUaSocket() {
      * about one specific PLC value and wants minimal re-renders.
      */
     socket.on('plc:currentStation', (data) => {
+      if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
         ...prev,
         currentStation: data.raw,
@@ -118,6 +126,7 @@ export default function useOpcUaSocket() {
     });
 
     socket.on('plc:robotStatus', (data) => {
+      if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
         ...prev,
         robotStatus: data.raw,
@@ -126,6 +135,7 @@ export default function useOpcUaSocket() {
     });
 
     socket.on('plc:arrivalDone', (data) => {
+      if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
         ...prev,
         arrivalDone: data.value,
@@ -136,10 +146,24 @@ export default function useOpcUaSocket() {
      * OPC UA connection status (backend ↔ Kepware).
      */
     socket.on('plc:connectionStatus', (data) => {
+      if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
         ...prev,
         isPlcConnected: data.connected,
       }));
+    });
+
+    // ── Cross-device state sync listeners ──────────────────────────────
+    socket.on('scada:stateSync', (data) => {
+      if (onStateSyncRef.current) {
+        onStateSyncRef.current(data);
+      }
+    });
+
+    socket.on('scada:dataSync', (data) => {
+      if (onDataSyncRef.current) {
+        onDataSyncRef.current(data);
+      }
     });
 
     // ── Cleanup on unmount ────────────────────────────────────────────
@@ -190,8 +214,8 @@ export default function useOpcUaSocket() {
    * @param {boolean} isStat         True for STAT (urgent) priority
    */
   const callCabin = useCallback(
-    (stationNumber, isStat = false) =>
-      emitCommand('plc:callCabin', { stationNumber, isStat }),
+    (stationNumber, isStat = false, stationId = null, action = 'CALL') =>
+      emitCommand('plc:callCabin', { stationNumber, isStat, stationId, action }),
     [emitCommand],
   );
 
@@ -229,6 +253,50 @@ export default function useOpcUaSocket() {
     [emitCommand],
   );
 
+  // ── Cross-device sync API ──────────────────────────────────────────────
+
+  /**
+   * Broadcast UI state snapshot to all other connected devices via Socket.io.
+   * This replaces the BroadcastChannel/localStorage sync for cross-device use.
+   *
+   * @param {object} snapshot  The state snapshot to broadcast
+   */
+  const emitStateSync = useCallback((snapshot) => {
+    const socket = socketRef.current;
+    if (!socket?.connected) return;
+    socket.emit('scada:stateSync', snapshot);
+  }, []);
+
+  /**
+   * Broadcast data mutation notification to all other connected devices.
+   *
+   * @param {object} data  The data change notification
+   */
+  const emitDataSync = useCallback((data) => {
+    const socket = socketRef.current;
+    if (!socket?.connected) return;
+    socket.emit('scada:dataSync', data);
+  }, []);
+
+  /**
+   * Force socket to disconnect and reconnect.
+   * This is necessary after login because the socket initially connects
+   * without the auth cookie (app mounts before login). Reconnecting
+   * sends the now-present cookie so the server can authenticate and
+   * join the client to the scada-sync room for cross-device sync.
+   */
+  const reconnectSocket = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    console.log('[OPC-UA Hook] Reconnecting socket for auth refresh...');
+    socket.disconnect();
+    // Short delay to ensure disconnect completes before reconnecting
+    setTimeout(() => socket.connect(), 100);
+  }, []);
+
+  // Expose socket ref getter for components that need direct socket access
+  const getSocket = useCallback(() => socketRef.current, []);
+
   // ── Memoized return value ──────────────────────────────────────────────
   return useMemo(
     () => ({
@@ -238,7 +306,14 @@ export default function useOpcUaSocket() {
       releaseEStop,
       resetError,
       setMaintenance,
+      // Cross-device sync
+      emitStateSync,
+      emitDataSync,
+      onStateSyncRef,
+      onDataSyncRef,
+      reconnectSocket,
+      getSocket,
     }),
-    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance],
+    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, reconnectSocket, getSocket],
   );
 }

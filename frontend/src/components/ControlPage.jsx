@@ -213,6 +213,7 @@ const ControlPage = memo(function ControlPage({ scada }) {
                   hasStatSpecimen={isSTAT}
                   disableActions={maintenanceMode.enabled}
                   queueInfo={queueInfo}
+                  currentUser={scada.currentUser}
                 />
               </Grid>
             ))}
