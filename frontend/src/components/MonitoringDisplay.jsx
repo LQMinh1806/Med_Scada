@@ -298,7 +298,7 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
 
   return (
     <Fade in timeout={400}>
-      <Box sx={{ display: 'grid', gap: 0.72, transform: { xs: 'translateX(4px)', md: 'translateX(40px)' } }}>
+      <Box sx={{ display: 'grid', gap: 0.72 }}>
         <Grid container spacing={0.75}>
           <Grid item xs={6} sm={3}>
             <KpiCard icon={<LocalShipping />} label="Tổng vận chuyển" value={kpis.total} unit="lượt" color="#65B5FF" />

@@ -765,6 +765,24 @@ const AdminPage = memo(function AdminPage({ scada }) {
   const handleOpenHistory = useCallback(() => setIsHistoryOpen(true), []);
   const handleCloseHistory = useCallback(() => setIsHistoryOpen(false), []);
 
+  // Confirm delete user dialog
+  const [deleteConfirmUser, setDeleteConfirmUser] = useState(null);
+
+  const handleRemoveRequest = useCallback((username) => {
+    const user = scada.users.find((u) => u.username === username);
+    setDeleteConfirmUser(user || { username });
+  }, [scada.users]);
+
+  const handleConfirmDelete = useCallback(() => {
+    if (!deleteConfirmUser) return;
+    scada.removeUser(deleteConfirmUser.username);
+    setDeleteConfirmUser(null);
+  }, [deleteConfirmUser, scada]);
+
+  const handleCancelDelete = useCallback(() => {
+    setDeleteConfirmUser(null);
+  }, []);
+
   return (
     <Box
       sx={{
@@ -885,7 +903,7 @@ const AdminPage = memo(function AdminPage({ scada }) {
             onToggleActive={scada.toggleUserActive}
             onUpdateRole={scada.updateUserRole}
             onUpdateStation={scada.updateUserStation}
-            onRemove={scada.removeUser}
+            onRemove={handleRemoveRequest}
             onEnrollFingerprint={handleEnrollFingerprint}
           />
         </TabPanel>
@@ -898,6 +916,38 @@ const AdminPage = memo(function AdminPage({ scada }) {
           <PersistedDataPanel scada={scada} />
         </TabPanel>
       </Box>
+
+      {/* Confirm delete user dialog */}
+      <Dialog open={Boolean(deleteConfirmUser)} onClose={handleCancelDelete} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800, color: '#C41C1C' }}>Xác nhận xóa tài khoản</DialogTitle>
+        <DialogContent dividers>
+          <Typography sx={{ mb: 1 }}>
+            Bạn có chắc chắn muốn <strong>xóa vĩnh viễn</strong> tài khoản này không?
+          </Typography>
+          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+            Username: <span style={{ fontFamily: '"IBM Plex Mono", monospace' }}>{deleteConfirmUser?.username}</span>
+          </Typography>
+          {deleteConfirmUser?.fullname && (
+            <Typography variant="body2" sx={{ fontWeight: 700 }}>
+              Họ tên: {deleteConfirmUser.fullname}
+            </Typography>
+          )}
+          <Alert severity="error" sx={{ mt: 2 }}>
+            Hành động này không thể hoàn tác. Tất cả logs liên quan sẽ được giữ lại nhưng tài khoản sẽ bị xóa khỏi hệ thống.
+          </Alert>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={handleCancelDelete} sx={{ fontWeight: 700 }}>Hủy</Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handleConfirmDelete}
+            sx={{ fontWeight: 800 }}
+          >
+            Xóa tài khoản
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Transport history dialog */}
       <TransportHistoryDialog

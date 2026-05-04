@@ -51,9 +51,9 @@ const DB_TRANSPORT_STATUS = {
 };
 
 const DEFAULT_STATIONS = [
-  { id: 'ST-01', name: 'Trung tam', locationIndex: 0 },
-  { id: 'ST-02', name: 'Xet nghiem', locationIndex: 2 },
-  { id: 'ST-03', name: 'Vi sinh', locationIndex: 3 },
+  { id: 'ST-01', name: 'Trung Tâm', locationIndex: 0 },
+  { id: 'ST-02', name: 'Xét Nghiệm', locationIndex: 2 },
+  { id: 'ST-03', name: 'Vi Sinh', locationIndex: 3 },
   { id: 'ST-04', name: 'PCR', locationIndex: 5 },
 ];
 

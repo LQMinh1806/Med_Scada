@@ -404,7 +404,7 @@ export default function App() {
       <Box
         component="main"
         sx={{
-          minHeight: 'calc(100dvh - 64px)',
+          minHeight: { xs: 'calc(100dvh - 64px)', sm: 'calc(100dvh - 72px)' },
           overflowY: 'visible',
           py: { xs: 2, md: 3 },
         }}

@@ -168,12 +168,33 @@ const ControlPage = memo(function ControlPage({ scada }) {
                 bgcolor:
                   robotState.status === ROBOT_STATUS.ESTOP
                     ? alpha('#C41C1C', 0.14)
+                    : robotState.status === ROBOT_STATUS.MAINTENANCE
+                    ? alpha('#FF9800', 0.14)
+                    : robotState.status === ROBOT_STATUS.MOVING
+                    ? alpha('#1976D2', 0.14)
                     : alpha('#0BDF50', 0.12),
-                color: robotState.status === ROBOT_STATUS.ESTOP ? '#C41C1C' : '#0A7B32',
-                border: `1px solid ${robotState.status === ROBOT_STATUS.ESTOP
-                  ? alpha('#C41C1C', 0.26)
-                  : alpha('#0BDF50', 0.2)
-                  }`,
+                color:
+                  robotState.status === ROBOT_STATUS.ESTOP
+                    ? '#C41C1C'
+                    : robotState.status === ROBOT_STATUS.MAINTENANCE
+                    ? '#E65100'
+                    : robotState.status === ROBOT_STATUS.MOVING
+                    ? '#1565C0'
+                    : '#0A7B32',
+                border: `1px solid ${
+                  robotState.status === ROBOT_STATUS.ESTOP
+                    ? alpha('#C41C1C', 0.26)
+                    : robotState.status === ROBOT_STATUS.MAINTENANCE
+                    ? alpha('#FF9800', 0.3)
+                    : robotState.status === ROBOT_STATUS.MOVING
+                    ? alpha('#1976D2', 0.22)
+                    : alpha('#0BDF50', 0.2)
+                }`,
+                animation:
+                  robotState.status === ROBOT_STATUS.ESTOP ||
+                  robotState.status === ROBOT_STATUS.MAINTENANCE
+                    ? 'flash-urgent 1.2s ease-in-out infinite'
+                    : 'none',
               }}
             />
 

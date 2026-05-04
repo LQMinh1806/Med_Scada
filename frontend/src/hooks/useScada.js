@@ -635,7 +635,7 @@ export default function useScada() {
         scanTime: record.scanTime,
       }),
     }).catch((error) => {
-      addLog(`Luu mau ${record.barcode} that bai: ${error.message}`, 'error');
+      addLog(`Lưu mẫu ${record.barcode} thất bại: ${error.message}`, 'error');
     });
 
     return record;
@@ -921,7 +921,7 @@ export default function useScada() {
             toStationId: target.id,
           }),
         }).catch((error) => {
-          addLog(`Luu van chuyen ${metadata.specimenRecord.barcode} that bai: ${error.message}`, 'error');
+          addLog(`Lưu vận chuyển ${metadata.specimenRecord.barcode} thất bại: ${error.message}`, 'error');
         });
       }
 
@@ -1173,7 +1173,7 @@ export default function useScada() {
     let eventSource = null;
     let fallbackIntervalId = null;
     const initialSyncTimer = setTimeout(() => {
-      hydratePersistedData({ syncStations: false });
+      debouncedHydrate({ syncStations: false });
     }, 0);
 
     const startFallbackPolling = () => {
@@ -1223,7 +1223,7 @@ export default function useScada() {
       // Reset so next login re-hydrates robot state from server logs
       initialHydrationDoneRef.current = false;
     };
-  }, [debouncedHydrate, hydratePersistedData, isAuthenticated]);
+  }, [debouncedHydrate, isAuthenticated]);
 
   // ── Cross-device sync via Socket.io ────────────────────────────────
   // Attach callback refs so the socket hook can invoke our sync handlers

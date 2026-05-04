@@ -26,7 +26,11 @@ const StationControlCard = memo(function StationControlCard({
   currentUser = null,
 }) {
   const ledColor = isCurrent ? '#0BDF50' : isTarget ? '#1976D2' : '#868685';
-  const ledGlow = 'none';
+  const ledGlow = isCurrent
+    ? `0 0 8px rgba(11, 223, 80, 0.7), 0 0 16px rgba(11, 223, 80, 0.35)`
+    : isTarget
+    ? `0 0 8px rgba(25, 118, 210, 0.7), 0 0 16px rgba(25, 118, 210, 0.35)`
+    : 'none';
 
   const statusLabel = isCurrent ? 'Cabin tại đây' : isTarget ? 'Đích đến' : 'Sẵn sàng';
   const borderAccent = isCurrent ? '#0BDF50' : isTarget ? '#1976D2' : 'transparent';

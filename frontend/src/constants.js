@@ -23,9 +23,9 @@ export const RAIL_POINTS = [
 ];
 
 export const STATIONS = [
-  { id: 'ST-01', name: 'Trung tam', idx: 0, samples: 0, ready: true },
-  { id: 'ST-02', name: 'Xet nghiem', idx: 2, samples: 3, ready: true },
-  { id: 'ST-03', name: 'Vi sinh', idx: 3, samples: 2, ready: true },
+  { id: 'ST-01', name: 'Trung Tâm', idx: 0, samples: 0, ready: true },
+  { id: 'ST-02', name: 'Xét Nghiệm', idx: 2, samples: 3, ready: true },
+  { id: 'ST-03', name: 'Vi Sinh', idx: 3, samples: 2, ready: true },
   { id: 'ST-04', name: 'PCR', idx: 5, samples: 1, ready: true },
 ];
 
