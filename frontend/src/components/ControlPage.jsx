@@ -21,7 +21,7 @@ import { BuildCircle, PriorityHigh } from '@mui/icons-material';
 import StationControlCard from './StationControlCard';
 import SpecimenScanPanel from './SpecimenScanPanel';
 import EStopButton from './EStopButton';
-import { PRIORITY, USER_ROLES } from '../constants';
+import { PRIORITY, USER_ROLES, ROBOT_STATUS } from '../constants';
 import { useNotification } from '../contexts/NotificationContext';
 
 
@@ -104,7 +104,6 @@ const ControlPage = memo(function ControlPage({ scada }) {
     if (!queue || queue.length === 0) return map;
     queue.forEach((item, idx) => {
       const sid = item.stationId;
-      // Only keep the first (most relevant) entry per station
       if (!map[sid]) {
         map[sid] = {
           position: idx + 1,
@@ -113,6 +112,11 @@ const ControlPage = memo(function ControlPage({ scada }) {
           // Station has only ROUTINE entries — allows STAT override
           hasRoutineOnly: item.priority === PRIORITY.ROUTINE,
         };
+      } else {
+        // FIX: If ANY task for this station is STAT, mark hasRoutineOnly = false
+        if (item.priority === PRIORITY.STAT) {
+          map[sid].hasRoutineOnly = false;
+        }
       }
     });
     return map;
@@ -162,18 +166,18 @@ const ControlPage = memo(function ControlPage({ scada }) {
               sx={{
                 fontWeight: 700,
                 bgcolor:
-                  robotState.status === 'Dừng khẩn cấp'
+                  robotState.status === ROBOT_STATUS.ESTOP
                     ? alpha('#C41C1C', 0.14)
                     : alpha('#0BDF50', 0.12),
-                color: robotState.status === 'Dừng khẩn cấp' ? '#C41C1C' : '#0A7B32',
-                border: `1px solid ${robotState.status === 'Dừng khẩn cấp'
+                color: robotState.status === ROBOT_STATUS.ESTOP ? '#C41C1C' : '#0A7B32',
+                border: `1px solid ${robotState.status === ROBOT_STATUS.ESTOP
                   ? alpha('#C41C1C', 0.26)
                   : alpha('#0BDF50', 0.2)
                   }`,
               }}
             />
 
-            {robotState.status === 'Dừng khẩn cấp' && (
+            {robotState.status === ROBOT_STATUS.ESTOP && (
               <Button
                 variant="outlined"
                 color="error"

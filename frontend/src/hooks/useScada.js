@@ -11,6 +11,7 @@ import {
   MIN_ANIMATION_DURATION_MS,
   BEZIER_SAMPLES_PER_SEG,
   PRIORITY,
+  ROBOT_STATUS,
 } from '../constants';
 import useScadaApi from './scada/useScadaApi';
 import useQueueScheduler, { DIRECTION } from './scada/useQueueScheduler';
@@ -74,7 +75,7 @@ export default function useScada() {
       x: initialPoint.x,
       y: initialPoint.y,
       targetId: initialStation.id,
-      status: 'Sẵn sàng',
+      status: ROBOT_STATUS.READY,
       isOnline: true,
     };
   });
@@ -103,6 +104,13 @@ export default function useScada() {
   // overwrite robotState.status — otherwise the user's E-STOP reset
   // action gets reverted when the server log still shows ESTOP status.
   const initialHydrationDoneRef = useRef(false);
+  // FIX [M5]: Track acknowledgeTask timer for cleanup on unmount
+  const ackResetTimerRef = useRef(null);
+  // FIX [H1]: Debounce timer for hydration calls
+  const hydrateDebounceRef = useRef(null);
+  // FIX [H3]: Debounce timer for log API calls
+  const logFlushTimerRef = useRef(null);
+  const logBatchRef = useRef([]);
   const apiRequest = useScadaApi({ setCurrentUser, setIsAuthenticated });
 
   // === Queue scheduler ===
@@ -255,6 +263,26 @@ export default function useScada() {
   }, []);
 
   // === Logging ===
+  // FIX [H3]: Batch log API writes. Logs are buffered and flushed
+  // every 500ms to avoid request storms during rapid operations.
+  const LOG_FLUSH_INTERVAL_MS = 500;
+
+  const flushLogBatch = useCallback(() => {
+    const batch = logBatchRef.current;
+    if (batch.length === 0) return;
+    logBatchRef.current = [];
+    // Fire individual API calls but without triggering separate sync events
+    // (backend debounces broadcastSyncRequired already)
+    for (const log of batch) {
+      apiRequest('/system-logs', {
+        method: 'POST',
+        body: JSON.stringify(log),
+      }).catch(() => {
+        // Ignore background persistence errors to keep the control loop responsive.
+      });
+    }
+  }, [apiRequest]);
+
   const addLog = useCallback((event, type = 'info') => {
     const time = new Date().toLocaleTimeString();
     setSystemLogs(prev => {
@@ -264,13 +292,15 @@ export default function useScada() {
       return next;
     });
 
-    apiRequest('/system-logs', {
-      method: 'POST',
-      body: JSON.stringify({ event, type }),
-    }).catch(() => {
-      // Ignore background persistence errors to keep the control loop responsive.
-    });
-  }, [apiRequest]);
+    // Buffer the API call instead of firing immediately
+    logBatchRef.current.push({ event, type });
+    if (!logFlushTimerRef.current) {
+      logFlushTimerRef.current = setTimeout(() => {
+        logFlushTimerRef.current = null;
+        flushLogBatch();
+      }, LOG_FLUSH_INTERVAL_MS);
+    }
+  }, [flushLogBatch]);
 
   const hydratePersistedData = useCallback(async ({ syncStations = true } = {}) => {
     try {
@@ -337,8 +367,8 @@ export default function useScada() {
             setRobotState((prev) => ({
               ...prev,
               status: maintenanceFromLog.enabled
-                ? 'Bảo trì'
-                : (prev.status === 'Bảo trì' ? 'Sẵn sàng' : prev.status),
+                ? ROBOT_STATUS.MAINTENANCE
+                : (prev.status === ROBOT_STATUS.MAINTENANCE ? ROBOT_STATUS.READY : prev.status),
             }));
           }
         }
@@ -434,7 +464,9 @@ export default function useScada() {
       return false;
     }
 
-    apiRequest('/auth/register', {
+    // FIX: Return the promise so callers can await the actual backend result
+    // instead of always returning true before the API responds.
+    return apiRequest('/auth/register', {
       method: 'POST',
       body: JSON.stringify({
         username: normalizedUsername,
@@ -447,7 +479,7 @@ export default function useScada() {
       .then((result) => {
         if (!result?.user) {
           addLog('Tạo tài khoản thất bại từ backend', 'error');
-          return;
+          return false;
         }
 
         const created = result.user;
@@ -463,12 +495,12 @@ export default function useScada() {
           ...prev.filter((user) => user.username !== created.username),
         ]);
         addLog(`Đã tạo tài khoản ${normalizedUsername}`, 'success');
+        return true;
       })
       .catch((error) => {
         addLog(`Tạo tài khoản thất bại: ${error.message}`, 'error');
+        return false;
       });
-
-    return true;
   }, [addLog, apiRequest, setUsersAndSyncRef]);
 
   const toggleUserActive = useCallback((username) => {
@@ -499,8 +531,11 @@ export default function useScada() {
       return;
     }
 
+    // FIX: Clear stationId when switching to TECH (matches backend behavior)
     setUsersAndSyncRef(prev =>
-      prev.map(user => (user.username === username ? { ...user, role } : user))
+      prev.map(user => (user.username === username
+        ? { ...user, role, stationId: role === USER_ROLES.TECH ? null : user.stationId }
+        : user))
     );
 
     apiRequest(`/users/${encodeURIComponent(username)}`, {
@@ -637,7 +672,7 @@ export default function useScada() {
       stopAnimation();
       setAnimating(false);
       setMoveId((id) => id + 1);
-      setRobotState((prev) => ({ ...prev, status: 'Bảo trì' }));
+      setRobotState((prev) => ({ ...prev, status: ROBOT_STATUS.MAINTENANCE }));
       addLog(
         `[MAINTENANCE] ENABLED${normalizedReason ? ` | reason=${normalizedReason}` : ''}`,
         'maintenance'
@@ -647,7 +682,7 @@ export default function useScada() {
         'state'
       );
       publishSyncSnapshot(buildSyncSnapshot({
-        status: 'Bảo trì',
+        status: ROBOT_STATUS.MAINTENANCE,
         maintenanceEnabled: true,
         maintenanceReason: normalizedReason,
       }));
@@ -656,7 +691,7 @@ export default function useScada() {
 
     setRobotState((prev) => ({
       ...prev,
-      status: prev.status === 'Bảo trì' ? 'Sẵn sàng' : prev.status,
+      status: prev.status === ROBOT_STATUS.MAINTENANCE ? ROBOT_STATUS.READY : prev.status,
     }));
     addLog('[MAINTENANCE] DISABLED', 'maintenance');
     addLog(
@@ -664,7 +699,7 @@ export default function useScada() {
       'state'
     );
     publishSyncSnapshot(buildSyncSnapshot({
-      status: 'Sẵn sàng',
+      status: ROBOT_STATUS.READY,
       maintenanceEnabled: false,
       maintenanceReason: '',
     }));
@@ -770,11 +805,11 @@ export default function useScada() {
     stopAnimation();
     setMoveId(id => id + 1);
     setAnimating(true);
-    setRobotState(prev => ({ ...prev, status: 'Đang di chuyển', targetId: stationId }));
+    setRobotState(prev => ({ ...prev, status: ROBOT_STATUS.MOVING, targetId: stationId }));
     addLog(`Lệnh [${action}]${priorityLabel} -> ${target.name}`);
     const fromPoint = RAIL_POINTS[fromIndex];
 
-    // Extract '1' from 'ST-01' safely, avoiding index offsets if STATIONS array changes.
+    // Extract station number safely and use padStart for 10+ station support
     const plcStationNumber = parseInt(target.id.split('-')[1], 10);
     const isStat = metadata?.specimenRecord?.priority === PRIORITY.STAT;
 
@@ -791,7 +826,7 @@ export default function useScada() {
       'state'
     );
     publishSyncSnapshot(buildSyncSnapshot({
-      status: 'Đang di chuyển',
+      status: ROBOT_STATUS.MOVING,
       index: fromIndex,
       targetId: stationId,
       x: fromPoint.x,
@@ -807,7 +842,7 @@ export default function useScada() {
         index: toIndex,
         x: lastPoint.x,
         y: lastPoint.y,
-        status: 'Sẵn sàng',
+        status: ROBOT_STATUS.READY,
         targetId: target.id,
       };
 
@@ -823,7 +858,7 @@ export default function useScada() {
         'state'
       );
       publishSyncSnapshot(buildSyncSnapshot({
-        status: 'Sẵn sàng',
+        status: ROBOT_STATUS.READY,
         index: toIndex,
         targetId: target.id,
         x: lastPoint.x,
@@ -939,7 +974,7 @@ export default function useScada() {
   }, [_cancelQueueItem, buildSyncSnapshot, publishSyncSnapshot]);
 
   const triggerQueueIfIdle = useCallback(() => {
-    if (!animatingRef.current && robotStateRef.current.status === 'Sẵn sàng' && !maintenanceRef.current.enabled) {
+    if (!animatingRef.current && robotStateRef.current.status === ROBOT_STATUS.READY && !maintenanceRef.current.enabled) {
       processNextQueueTask(robotStateRef.current.index);
     }
   }, [processNextQueueTask]);
@@ -1027,7 +1062,7 @@ export default function useScada() {
     stopAnimation();
     setAnimating(false);
     setMoveId(id => id + 1);
-    setRobotState(prev => ({ ...prev, status: 'Dừng khẩn cấp' }));
+    setRobotState(prev => ({ ...prev, status: ROBOT_STATUS.ESTOP }));
 
     // --- KÍCH HOẠT LỆNH E-STOP XUỐNG PLC ---
     opc.triggerEStop().then((res) => {
@@ -1048,7 +1083,7 @@ export default function useScada() {
       'state'
     );
     publishSyncSnapshot(buildSyncSnapshot({
-      status: 'Dừng khẩn cấp',
+      status: ROBOT_STATUS.ESTOP,
       index: robotStateRef.current.index,
       targetId: robotStateRef.current.targetId,
       x: robotStateRef.current.x,
@@ -1065,13 +1100,13 @@ export default function useScada() {
     // PLC commands are now fire-and-forget in the background.
 
     // ── 1. Instant UI recovery ──────────────────────────────────────────
-    setRobotState(prev => ({ ...prev, status: 'Sẵn sàng' }));
+    setRobotState(prev => ({ ...prev, status: ROBOT_STATUS.READY }));
     addLog('Hệ thống đã được khôi phục sau Dừng khẩn cấp', 'success');
     addLog(
       `[ROBOT_STATE] status=READY index=${robotStateRef.current.index} target=${robotStateRef.current.targetId} x=${Math.round(robotStateRef.current.x)} y=${Math.round(robotStateRef.current.y)}`,
       'state'
     );
-    publishSyncSnapshot(buildSyncSnapshot({ status: 'Sẵn sàng' }));
+    publishSyncSnapshot(buildSyncSnapshot({ status: ROBOT_STATUS.READY }));
 
     // ── 2. Background PLC commands (fire-and-forget) ────────────────────
     // Release E-Stop first, then send reset pulse after a short gap.
@@ -1085,7 +1120,9 @@ export default function useScada() {
     });
 
     // Small delay between release and reset to let PLC process the state change
-    setTimeout(() => {
+    // FIX [M5]: Track timer for cleanup on unmount
+    ackResetTimerRef.current = setTimeout(() => {
+      ackResetTimerRef.current = null;
       opc.resetError().then((res) => {
         if (!res?.ok) {
           addLog(`Cảnh báo PLC: Reset lỗi không thành công (${res?.error || 'PLC offline'})`, 'error');
@@ -1098,8 +1135,36 @@ export default function useScada() {
 
   // === Cleanup ===
   useEffect(() => {
-    return () => stopAnimation();
+    return () => {
+      stopAnimation();
+      // FIX [M5]: Clear pending timers on unmount
+      if (ackResetTimerRef.current) {
+        clearTimeout(ackResetTimerRef.current);
+        ackResetTimerRef.current = null;
+      }
+      // FIX [H1]: Clear hydration debounce
+      if (hydrateDebounceRef.current) {
+        clearTimeout(hydrateDebounceRef.current);
+        hydrateDebounceRef.current = null;
+      }
+      // FIX [H3]: Flush pending logs and clear timer
+      if (logFlushTimerRef.current) {
+        clearTimeout(logFlushTimerRef.current);
+        logFlushTimerRef.current = null;
+      }
+    };
   }, [stopAnimation]);
+
+  // FIX [H1]: Debounced hydration wrapper to prevent double-hydration storm.
+  // Both SSE and Socket.io dataSync fire for the same mutation;
+  // this collapses them into a single /api/bootstrap call.
+  const debouncedHydrate = useCallback((opts) => {
+    if (hydrateDebounceRef.current) clearTimeout(hydrateDebounceRef.current);
+    hydrateDebounceRef.current = setTimeout(() => {
+      hydrateDebounceRef.current = null;
+      hydratePersistedData(opts);
+    }, 300);
+  }, [hydratePersistedData]);
 
   // Keep clients synchronized via backend SSE; fallback to slow polling on errors.
   useEffect(() => {
@@ -1128,7 +1193,8 @@ export default function useScada() {
       try {
         const payload = JSON.parse(String(event?.data || '{}'));
         if (payload?.type === 'sync-required') {
-          hydratePersistedData({ syncStations: false });
+          // FIX [H1]: Use debounced hydration to avoid double-calls
+          debouncedHydrate({ syncStations: false });
         }
       } catch {
         // Ignore malformed SSE payloads.
@@ -1157,7 +1223,7 @@ export default function useScada() {
       // Reset so next login re-hydrates robot state from server logs
       initialHydrationDoneRef.current = false;
     };
-  }, [hydratePersistedData, isAuthenticated]);
+  }, [debouncedHydrate, hydratePersistedData, isAuthenticated]);
 
   // ── Cross-device sync via Socket.io ────────────────────────────────
   // Attach callback refs so the socket hook can invoke our sync handlers
@@ -1183,7 +1249,8 @@ export default function useScada() {
     opc.onDataSyncRef.current = (data) => {
       if (!data || typeof data !== 'object') return;
       if (data.type === 'sync-required') {
-        hydratePersistedData({ syncStations: false });
+        // FIX [H1]: Use debounced hydration to avoid double-calls
+        debouncedHydrate({ syncStations: false });
       }
     };
 
@@ -1191,7 +1258,7 @@ export default function useScada() {
       opc.onStateSyncRef.current = null;
       opc.onDataSyncRef.current = null;
     };
-  }, [isAuthenticated, applySyncSnapshot, shouldApplySyncPayload, hydratePersistedData, opc]);
+  }, [isAuthenticated, applySyncSnapshot, shouldApplySyncPayload, debouncedHydrate, opc]);
 
   // Keep tabs synced instantly in the same browser session.
   useEffect(() => {

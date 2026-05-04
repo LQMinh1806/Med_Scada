@@ -20,7 +20,7 @@ import {
 } from '@mui/icons-material';
 import ScadaSVGMap from './ScadaSVGMap';
 import TransportHistoryDialog from './TransportHistoryDialog';
-import { PRIORITY } from '../constants';
+import { PRIORITY, ROBOT_STATUS } from '../constants';
 
 const KpiCard = memo(function KpiCard({ icon, label, value, unit, color, trend }) {
   return (
@@ -213,8 +213,8 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
   const handleCloseHistory = useCallback(() => setIsHistoryOpen(false), []);
 
   const statusColor = useMemo(() => {
-    if (robotState.status === 'Dừng khẩn cấp') return '#C41C1C';
-    if (robotState.status === 'Đang di chuyển') return '#1976D2';
+    if (robotState.status === ROBOT_STATUS.ESTOP) return '#C41C1C';
+    if (robotState.status === ROBOT_STATUS.MOVING) return '#1976D2';
     return '#05903A';
   }, [robotState.status]);
 

@@ -1,5 +1,5 @@
 import { memo, useId, useMemo, useCallback } from 'react';
-import { PRIORITY } from '../constants';
+import { PRIORITY, ROBOT_STATUS } from '../constants';
 
 // === Geometry helpers ===
 
@@ -32,8 +32,8 @@ function pointsToPolyline(points) {
 }
 
 function getStatusLedColor(status) {
-  if (status === 'Đang di chuyển') return '#1976D2';
-  if (status === 'Dừng khẩn cấp') return '#ff5252';
+  if (status === ROBOT_STATUS.MOVING) return '#1976D2';
+  if (status === ROBOT_STATUS.ESTOP) return '#ff5252';
   return '#66ff99';
 }
 
@@ -203,7 +203,7 @@ const StationNode = memo(function StationNode({ station, tx, ty, angle, onClick 
 });
 
 const CabinSprite = memo(function CabinSprite({ pose, ledColor, status, moveId, ids, animating }) {
-  const blinkDur = status === 'Đang di chuyển' ? '0.6s' : '1.4s';
+  const blinkDur = status === ROBOT_STATUS.MOVING ? '0.6s' : '1.4s';
 
   return (
     <>

@@ -31,8 +31,8 @@ export const STATIONS = [
 
 // === Default users ===
 export const INITIAL_USERS = [
-  { id: 1, username: 'tech_01', password: '123456', fullname: 'Kỹ Thuật Viên', role: 'tech', active: true },
-  { id: 2, username: 'operator_01', password: '123456', fullname: 'Vận Hành Viên', role: 'operator', active: true },
+  { id: 1, username: 'tech_01', fullname: 'Kỹ Thuật Viên', role: 'tech', active: true },
+  { id: 2, username: 'operator_01', fullname: 'Vận Hành Viên', role: 'operator', active: true },
 ];
 
 export const USER_ROLES = {
@@ -61,4 +61,12 @@ export const PRIORITY = {
 export const PRIORITY_LABELS = {
   [PRIORITY.ROUTINE]: 'Routine',
   [PRIORITY.STAT]: 'STAT — Khẩn cấp',
+};
+
+// === Robot status strings (centralized source of truth) ===
+export const ROBOT_STATUS = {
+  READY: 'Sẵn sàng',
+  MOVING: 'Đang di chuyển',
+  ESTOP: 'Dừng khẩn cấp',
+  MAINTENANCE: 'Bảo trì',
 };

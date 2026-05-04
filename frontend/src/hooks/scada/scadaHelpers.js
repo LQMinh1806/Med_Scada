@@ -1,3 +1,5 @@
+import { ROBOT_STATUS } from '../../constants';
+
 export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -111,12 +113,13 @@ export function parseRobotStateEvent(eventText) {
   }
 
   const statusCode = (values.status || '').toUpperCase();
-  let status = null;
-  if (statusCode === 'READY') status = 'Sẵn sàng';
-  if (statusCode === 'MOVING') status = 'Đang di chuyển';
-  if (statusCode === 'ESTOP') status = 'Dừng khẩn cấp';
-  if (statusCode === 'MAINTENANCE') status = 'Bảo trì';
-  if (!status) return null;
+  const STATUS_MAP = {
+    READY: ROBOT_STATUS.READY,
+    MOVING: ROBOT_STATUS.MOVING,
+    ESTOP: ROBOT_STATUS.ESTOP,
+    MAINTENANCE: ROBOT_STATUS.MAINTENANCE,
+  };
+  const status = STATUS_MAP[statusCode] || null;
 
   const index = Number.parseInt(values.index, 10);
   const x = Number.parseFloat(values.x);

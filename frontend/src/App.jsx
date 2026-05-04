@@ -22,7 +22,7 @@ import {
 } from '@mui/icons-material';
 
 import theme from './theme';
-import { ROUTES, USER_ROLES } from './constants';
+import { ROUTES, USER_ROLES, ROBOT_STATUS } from './constants';
 import { attachCsrfHeader } from './utils/csrf';
 import { useNotification } from './contexts/NotificationContext';
 import useScada from './hooks/useScada';
@@ -146,7 +146,7 @@ export default function App() {
   const prevStatusRef = useRef(scada.robotState.status);
   useEffect(() => {
     const currentStatus = scada.robotState.status;
-    if (prevStatusRef.current === 'Đang di chuyển' && currentStatus === 'Sẵn sàng') {
+    if (prevStatusRef.current === ROBOT_STATUS.MOVING && currentStatus === ROBOT_STATUS.READY) {
       const targetStation = scada.stations.find((s) => s.id === scada.robotState.targetId);
       if (targetStation) {
         notifyCabinArrived(targetStation.name);

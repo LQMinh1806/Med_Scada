@@ -100,6 +100,7 @@ function logError(msg, err) {
  * that matches the existing frontend status vocabulary.
  */
 function mapRobotStatus(plcValue) {
+  if (plcValue === null || plcValue === undefined) return 'Chưa kết nối';
   switch (plcValue) {
     case 0:  return 'Sẵn sàng';
     case 1:  return 'Đang di chuyển';
@@ -112,8 +113,8 @@ function mapRobotStatus(plcValue) {
  * Map a PLC station number (1–4) to the SCADA station ID (ST-01 … ST-04).
  */
 function mapStationId(plcStation) {
-  if (plcStation >= 1 && plcStation <= 4) {
-    return `ST-0${plcStation}`;
+  if (Number.isInteger(plcStation) && plcStation >= 1) {
+    return `ST-${String(plcStation).padStart(2, '0')}`;
   }
   return null;
 }

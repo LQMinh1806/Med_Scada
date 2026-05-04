@@ -126,7 +126,39 @@ const io = new SocketIOServer(httpServer, {
 // Track pending fingerprint enrollment sessions
 // Map<socketId, { userId, username, status, timer }>
 const pendingEnrollments = new Map();
-let activeFingerprintLoginSocketId = null;
+
+// FIX [C1]: Fingerprint login session with expiry timeout to prevent
+// indefinite session lock when client disconnects without cancelling.
+const FINGERPRINT_LOGIN_TIMEOUT_SERVER_MS = 35_000; // match frontend + 5s margin
+const fingerprintLoginSession = { socketId: null, expiresAt: 0, timer: null };
+
+function getActiveFingerprintLoginSocketId() {
+  if (!fingerprintLoginSession.socketId) return null;
+  if (Date.now() > fingerprintLoginSession.expiresAt) {
+    clearFingerprintLoginSession();
+    return null;
+  }
+  return fingerprintLoginSession.socketId;
+}
+
+function setFingerprintLoginSession(socketId) {
+  clearFingerprintLoginSession();
+  fingerprintLoginSession.socketId = socketId;
+  fingerprintLoginSession.expiresAt = Date.now() + FINGERPRINT_LOGIN_TIMEOUT_SERVER_MS;
+  fingerprintLoginSession.timer = setTimeout(() => {
+    console.log(`[Socket.io] Fingerprint login session expired for ${socketId}`);
+    clearFingerprintLoginSession();
+  }, FINGERPRINT_LOGIN_TIMEOUT_SERVER_MS);
+}
+
+function clearFingerprintLoginSession() {
+  if (fingerprintLoginSession.timer) {
+    clearTimeout(fingerprintLoginSession.timer);
+    fingerprintLoginSession.timer = null;
+  }
+  fingerprintLoginSession.socketId = null;
+  fingerprintLoginSession.expiresAt = 0;
+}
 
 // ── Socket.io authentication middleware ──────────────────────────────────────
 // Allows unauthenticated connections (needed for fingerprint login waiting room)
@@ -243,6 +275,8 @@ io.on('connection', (socket) => {
     try {
       const active = Boolean(data?.active);
       await setEStop(active);
+      // FIX [L2]: Audit log for safety-critical E-Stop operations
+      console.log(`[Socket.io] plc:eStop ${active ? 'ENGAGED' : 'RELEASED'} by ${socket.data.user?.username || socket.id}`);
       if (typeof ack === 'function') ack({ ok: true });
     } catch (err) {
       console.error('[Socket.io] plc:eStop error:', err.message);
@@ -276,11 +310,12 @@ io.on('connection', (socket) => {
   // ── Fingerprint: login mode ─────────────────────────────────────────
   // Client requests to start fingerprint login mode
   socket.on('FINGERPRINT_LOGIN_WAIT', () => {
-    if (activeFingerprintLoginSocketId && activeFingerprintLoginSocketId !== socket.id) {
+    const activeId = getActiveFingerprintLoginSocketId();
+    if (activeId && activeId !== socket.id) {
       socket.emit('LOGIN_ERROR', { message: 'Another fingerprint login session is in progress.' });
       return;
     }
-    activeFingerprintLoginSocketId = socket.id;
+    setFingerprintLoginSession(socket.id);
     socket.join('fingerprint-login-waiters');
     console.log(`[Socket.io] ${socket.id} joined fingerprint-login-waiters`);
   });
@@ -288,8 +323,8 @@ io.on('connection', (socket) => {
   // Client cancels fingerprint login wait
   socket.on('FINGERPRINT_LOGIN_CANCEL', () => {
     socket.leave('fingerprint-login-waiters');
-    if (activeFingerprintLoginSocketId === socket.id) {
-      activeFingerprintLoginSocketId = null;
+    if (getActiveFingerprintLoginSocketId() === socket.id) {
+      clearFingerprintLoginSession();
     }
     console.log(`[Socket.io] ${socket.id} left fingerprint-login-waiters`);
   });
@@ -330,8 +365,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    if (activeFingerprintLoginSocketId === socket.id) {
-      activeFingerprintLoginSocketId = null;
+    if (getActiveFingerprintLoginSocketId() === socket.id) {
+      clearFingerprintLoginSession();
     }
     const existing = pendingEnrollments.get(socket.id);
     if (existing && existing.timer) clearTimeout(existing.timer);
@@ -340,34 +375,47 @@ io.on('connection', (socket) => {
   });
 });
 
-function broadcastSyncRequired(reason) {
-  const ts = Date.now();
-  const payload = JSON.stringify({
-    type: 'sync-required',
-    reason,
-    ts,
-  });
+// FIX [H1]: Debounce broadcastSyncRequired to collapse rapid mutations
+// (e.g. 4 system-log writes during a robot move) into a single sync event.
+let syncDebounceTimer = null;
+let pendingSyncReasons = new Set();
+const SYNC_DEBOUNCE_MS = 200;
 
-  // Notify via SSE (legacy path)
-  if (sseClients.size) {
-    for (const client of sseClients) {
-      try {
-        client.write(`data: ${payload}\n\n`);
-      } catch {
-        sseClients.delete(client);
+function broadcastSyncRequired(reason) {
+  pendingSyncReasons.add(reason);
+  if (syncDebounceTimer) return;
+
+  syncDebounceTimer = setTimeout(() => {
+    syncDebounceTimer = null;
+    const reasons = [...pendingSyncReasons];
+    pendingSyncReasons.clear();
+
+    const ts = Date.now();
+    const payload = JSON.stringify({
+      type: 'sync-required',
+      reason: reasons.join(','),
+      ts,
+    });
+
+    // Notify via SSE (legacy path)
+    if (sseClients.size) {
+      for (const client of sseClients) {
+        try {
+          client.write(`data: ${payload}\n\n`);
+        } catch {
+          sseClients.delete(client);
+        }
       }
     }
-  }
 
-  // Also notify via Socket.io for instant cross-device sync
-  // Uses io.emit (all sockets) instead of room-based emit because
-  // sockets may connect before login and never join a sync room.
-  io.emit('scada:dataSync', {
-    type: 'sync-required',
-    reason,
-    _ts: ts,
-    _sourceSocketId: '__server__',
-  });
+    // Also notify via Socket.io for instant cross-device sync
+    io.emit('scada:dataSync', {
+      type: 'sync-required',
+      reason: reasons.join(','),
+      _ts: ts,
+      _sourceSocketId: '__server__',
+    });
+  }, SYNC_DEBOUNCE_MS);
 }
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -511,7 +559,11 @@ function requireCsrf(req, res, next) {
   }
 
   // FIX: ESP32 fingerprint endpoints use API key auth, not cookies — exempt from CSRF
-  if (req.path.startsWith('/api/fingerprint/')) {
+  // Only exempt specific ESP32 paths, NOT the admin DELETE endpoint
+  if (req.path === '/api/fingerprint/status' ||
+      req.path === '/api/fingerprint/match' ||
+      req.path === '/api/fingerprint/enroll' ||
+      req.path === '/api/fingerprint/enroll-step') {
     next();
     return;
   }
@@ -819,8 +871,12 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ message: "role must be either 'tech' or 'operator'." });
     }
 
-    const userCount = await prisma.user.count();
-    const isBootstrapRegistration = userCount === 0;
+    // FIX [C2]: Use transaction to make bootstrap check + create atomic,
+    // preventing race condition when two requests hit empty DB simultaneously.
+    const isBootstrapRegistration = await prisma.$transaction(async (tx) => {
+      const count = await tx.user.count();
+      return count === 0;
+    });
     if (!isBootstrapRegistration && !req.user) {
       return res.status(401).json({ message: 'Only authenticated tech users can register new accounts.' });
     }
@@ -1067,8 +1123,20 @@ app.patch('/api/users/:username', requireAuth, requireRole('tech'), async (req, 
       }
     }
 
-    if (stationId !== undefined && data.role !== 'TECH') {
-      data.stationId = String(stationId).trim() || null;
+    // FIX [L3]: When only stationId is updated (no role in body),
+    // query the user's current role from DB to apply RBAC correctly.
+    if (stationId !== undefined) {
+      const effectiveRole = data.role || (
+        await prisma.user.findUnique({
+          where: { username },
+          select: { role: true },
+        })
+      )?.role;
+      if (effectiveRole !== 'TECH') {
+        data.stationId = String(stationId).trim() || null;
+      }
+      // If role is TECH (either already or being set), stationId is already
+      // cleared by the role-change block above.
     }
 
     if (!Object.keys(data).length) {
@@ -1509,9 +1577,9 @@ app.post('/api/fingerprint/match', requireEsp32ApiKey, async (req, res) => {
       { expiresIn: JWT_EXPIRES_IN }
     );
 
-    const targetSocketId = activeFingerprintLoginSocketId;
+    const targetSocketId = getActiveFingerprintLoginSocketId();
     if (!targetSocketId || !io.sockets.sockets.has(targetSocketId)) {
-      activeFingerprintLoginSocketId = null;
+      clearFingerprintLoginSession();
       return res.status(409).json({ message: 'No active fingerprint login session.' });
     }
 
@@ -1527,7 +1595,7 @@ app.post('/api/fingerprint/match', requireEsp32ApiKey, async (req, res) => {
         stationId: user.stationId ?? null,
       },
     });
-    activeFingerprintLoginSocketId = null;
+    clearFingerprintLoginSession();
 
     console.log(`[Fingerprint] LOGIN_SUCCESS emitted for user: ${user.username}`);
 

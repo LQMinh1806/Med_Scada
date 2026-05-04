@@ -46,7 +46,8 @@ import TabPanel from './TabPanel';
 import TransportHistoryDialog from './TransportHistoryDialog';
 import { USER_ROLES, STATIONS } from '../constants';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+// FIX: Align with useOpcUaSocket.js — empty string routes to current origin via Vite proxy
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? '';
 const ENROLL_TIMEOUT_MS = 60_000;
 
 const pulseRing = keyframes`
@@ -307,9 +308,9 @@ const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
   }, []);
 
   const handleSubmit = useCallback(
-    (event) => {
+    async (event) => {
       event.preventDefault();
-      const success = onCreateUser({
+      const success = await onCreateUser({
         username: newUser.username.trim(),
         password: newUser.password,
         fullname: newUser.fullname.trim(),
