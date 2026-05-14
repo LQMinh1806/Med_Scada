@@ -57,6 +57,8 @@ export default function useScada() {
   const [users, setUsers] = useState(INITIAL_USERS);
   const [systemLogs, setSystemLogs] = useState([]);
   const [currentSpecimen, setCurrentSpecimen] = useState(null);
+  const [scanList, setScanList] = useState([]);
+  const [scanFeedback, setScanFeedback] = useState(null); // 'success' | 'error' | 'duplicate' | null
   const [scannedSpecimens, setScannedSpecimens] = useState([]);
   const [transportedSpecimens, setTransportedSpecimens] = useState([]);
   const [maintenanceMode, setMaintenanceMode] = useState({
@@ -97,6 +99,8 @@ export default function useScada() {
   const specimenIdRef = useRef(1);
   const maintenanceRef = useRef(maintenanceMode);
   const animatingRef = useRef(animating);
+  const scanListRef = useRef(scanList);
+  const scanFeedbackTimerRef = useRef(null);
   const syncChannelRef = useRef(null);
   const lastAppliedSyncTsRef = useRef(0);
   // FIX: Track whether initial robot state hydration has been done.
@@ -147,6 +151,7 @@ export default function useScada() {
   useEffect(() => { currentSpecimenRef.current = currentSpecimen; }, [currentSpecimen]);
   useEffect(() => { maintenanceRef.current = maintenanceMode; }, [maintenanceMode]);
   useEffect(() => { animatingRef.current = animating; }, [animating]);
+  useEffect(() => { scanListRef.current = scanList; }, [scanList]);
   useEffect(() => {
     if (!isAuthenticated) {
       lastAppliedSyncTsRef.current = 0;
@@ -592,7 +597,95 @@ export default function useScada() {
     );
   }, [setUsersAndSyncRef]);
 
-  // === Specimen management (with priority support) ===
+  // === Specimen management — Batch scanning with barcode lookup ===
+  const clearScanFeedback = useCallback(() => {
+    if (scanFeedbackTimerRef.current) clearTimeout(scanFeedbackTimerRef.current);
+    scanFeedbackTimerRef.current = setTimeout(() => {
+      setScanFeedback(null);
+      scanFeedbackTimerRef.current = null;
+    }, 2000);
+  }, []);
+
+  const lookupBarcode = useCallback(async (barcode) => {
+    const normalizedBarcode = String(barcode || '').trim().toUpperCase();
+    if (!normalizedBarcode) return null;
+
+    // Check for duplicates in current scan list
+    if (scanListRef.current.some((s) => s.barcode === normalizedBarcode)) {
+      setScanFeedback('duplicate');
+      clearScanFeedback();
+      addLog(`Mẫu ${normalizedBarcode} đã có trong danh sách`, 'info');
+      return null;
+    }
+
+    try {
+      const result = await apiRequest(`/specimens/lookup/${encodeURIComponent(normalizedBarcode)}`);
+      if (!result?.specimen) {
+        setScanFeedback('error');
+        clearScanFeedback();
+        addLog(`Không tìm thấy mẫu ${normalizedBarcode}`, 'error');
+        return null;
+      }
+
+      const specimen = result.specimen;
+      const record = {
+        id: specimen.id,
+        barcode: specimen.barcode,
+        patientName: specimen.patientName,
+        testType: specimen.testType,
+        priority: specimen.priority || PRIORITY.ROUTINE,
+        status: specimen.status || 'pending',
+        scanTime: new Date().toISOString(),
+      };
+
+      // Add to scan list
+      setScanList((prev) => [...prev, record]);
+      // Also set as currentSpecimen for backward compatibility
+      setCurrentSpecimen(record);
+
+      setScanFeedback('success');
+      clearScanFeedback();
+
+      const priorityLabel = record.priority === PRIORITY.STAT ? ' [STAT]' : '';
+      addLog(`Đã quét mẫu ${record.barcode}${priorityLabel} — ${record.patientName}`,
+        record.priority === PRIORITY.STAT ? 'error' : 'info');
+
+      // Mark as scanned in backend
+      apiRequest('/specimens/scan', {
+        method: 'POST',
+        body: JSON.stringify({
+          barcode: record.barcode,
+          patientName: record.patientName,
+          testType: record.testType,
+          priority: record.priority,
+          scanTime: record.scanTime,
+        }),
+      }).catch((error) => {
+        addLog(`Lưu mẫu ${record.barcode} thất bại: ${error.message}`, 'error');
+      });
+
+      return record;
+    } catch {
+      setScanFeedback('error');
+      clearScanFeedback();
+      addLog(`Không tìm thấy mẫu ${normalizedBarcode} trong hệ thống`, 'error');
+      return null;
+    }
+  }, [addLog, apiRequest, clearScanFeedback]);
+
+  const removeFromScanList = useCallback((barcode) => {
+    setScanList((prev) => prev.filter((s) => s.barcode !== barcode));
+    addLog(`Đã xóa mẫu ${barcode} khỏi danh sách quét`, 'info');
+  }, [addLog]);
+
+  const clearScanList = useCallback(() => {
+    const count = scanListRef.current.length;
+    setScanList([]);
+    setCurrentSpecimen(null);
+    if (count > 0) addLog(`Đã xóa ${count} mẫu khỏi danh sách quét`, 'info');
+  }, [addLog]);
+
+  // Legacy single-specimen support (kept for backward compatibility)
   const registerScannedSpecimen = useCallback((specimen) => {
     if (!specimen || !specimen.barcode || !specimen.patientName || !specimen.testType) {
       addLog('Dữ liệu mẫu bệnh phẩm không hợp lệ', 'error');
@@ -866,13 +959,18 @@ export default function useScada() {
       }));
 
       if (metadata?.specimenRecord) {
-        const deliveredRecord = {
-          specimenId: metadata.specimenRecord.id,
-          barcode: metadata.specimenRecord.barcode,
-          patientName: metadata.specimenRecord.patientName,
-          testType: metadata.specimenRecord.testType,
-          priority: metadata.specimenRecord.priority || PRIORITY.ROUTINE,
-          scanTime: metadata.specimenRecord.scanTime,
+        // Batch dispatch: handle multiple specimens
+        const allSpecimens = metadata.isBatch && Array.isArray(metadata.specimenRecords)
+          ? metadata.specimenRecords
+          : [metadata.specimenRecord];
+
+        const deliveredRecords = allSpecimens.map((spec) => ({
+          specimenId: spec.id,
+          barcode: spec.barcode,
+          patientName: spec.patientName,
+          testType: spec.testType,
+          priority: spec.priority || PRIORITY.ROUTINE,
+          scanTime: spec.scanTime,
           dispatchTime: metadata.dispatchTime,
           arrivalTime: arrivedTime,
           fromStationId: fromStation?.id || 'N/A',
@@ -880,17 +978,18 @@ export default function useScada() {
           toStationId: target.id,
           toStationName: target.name,
           cabinId: robotStateRef.current.id,
-        };
+        }));
 
         setTransportedSpecimens(prev => {
-          const next = [deliveredRecord, ...prev];
+          const next = [...deliveredRecords, ...prev];
           if (next.length > MAX_SPECIMEN_HISTORY) next.length = MAX_SPECIMEN_HISTORY;
           return next;
         });
 
+        const specimenIds = allSpecimens.map((s) => s.id);
         setScannedSpecimens(prev =>
           prev.map(item =>
-            item.id === metadata.specimenRecord.id
+            specimenIds.includes(item.id)
               ? {
                 ...item,
                 status: 'transported',
@@ -903,26 +1002,45 @@ export default function useScada() {
           )
         );
 
-        addLog(`Mẫu ${metadata.specimenRecord.barcode} đã bàn giao tại ${target.name}`, 'success');
+        const batchLabel = allSpecimens.length > 1 ? ` (${allSpecimens.length} mẫu)` : '';
+        addLog(`Mẫu ${metadata.specimenRecord.barcode}${batchLabel} đã bàn giao tại ${target.name}`, 'success');
 
-        apiRequest('/transports/complete', {
-          method: 'POST',
-          body: JSON.stringify({
-            cabinId: robotStateRef.current.id,
-            status: 'arrived',
-            barcode: metadata.specimenRecord.barcode,
-            patientName: metadata.specimenRecord.patientName,
-            testType: metadata.specimenRecord.testType,
-            priority: metadata.specimenRecord.priority || PRIORITY.ROUTINE,
-            scanTime: metadata.specimenRecord.scanTime,
-            dispatchTime: metadata.dispatchTime,
-            arrivalTime: arrivedTime,
-            fromStationId: fromStation?.id,
-            toStationId: target.id,
-          }),
-        }).catch((error) => {
-          addLog(`Lưu vận chuyển ${metadata.specimenRecord.barcode} thất bại: ${error.message}`, 'error');
-        });
+        // Use batch API for multiple specimens, legacy for single
+        if (metadata.isBatch && allSpecimens.length > 1) {
+          apiRequest('/transports/batch-complete', {
+            method: 'POST',
+            body: JSON.stringify({
+              cabinId: robotStateRef.current.id,
+              status: 'arrived',
+              barcodes: allSpecimens.map((s) => s.barcode),
+              dispatchTime: metadata.dispatchTime,
+              arrivalTime: arrivedTime,
+              fromStationId: fromStation?.id,
+              toStationId: target.id,
+            }),
+          }).catch((error) => {
+            addLog(`Lưu batch vận chuyển thất bại: ${error.message}`, 'error');
+          });
+        } else {
+          apiRequest('/transports/complete', {
+            method: 'POST',
+            body: JSON.stringify({
+              cabinId: robotStateRef.current.id,
+              status: 'arrived',
+              barcode: metadata.specimenRecord.barcode,
+              patientName: metadata.specimenRecord.patientName,
+              testType: metadata.specimenRecord.testType,
+              priority: metadata.specimenRecord.priority || PRIORITY.ROUTINE,
+              scanTime: metadata.specimenRecord.scanTime,
+              dispatchTime: metadata.dispatchTime,
+              arrivalTime: arrivedTime,
+              fromStationId: fromStation?.id,
+              toStationId: target.id,
+            }),
+          }).catch((error) => {
+            addLog(`Lưu vận chuyển ${metadata.specimenRecord.barcode} thất bại: ${error.message}`, 'error');
+          });
+        }
       }
 
       // ── Queue integration: auto-process next task after arrival ──
@@ -1053,6 +1171,52 @@ export default function useScada() {
     );
 
     setCurrentSpecimen(null);
+    setScanList([]);
+    publishQueueSync();
+    triggerQueueIfIdle();
+    return true;
+  }, [addLog, enqueue, publishQueueSync, triggerQueueIfIdle]);
+
+  // === Batch dispatch — dispatch all specimens in scanList ===
+  const dispatchBatchSpecimens = useCallback((stationId) => {
+    const specimens = scanListRef.current;
+    if (!specimens || specimens.length === 0) {
+      addLog('Không thể dispatch: danh sách quét trống', 'error');
+      return false;
+    }
+
+    if (maintenanceRef.current.enabled) {
+      addLog('[MAINTENANCE] Command blocked while maintenance mode is enabled', 'maintenance');
+      return false;
+    }
+
+    const dispatchTime = new Date().toISOString();
+    // Use highest priority from the batch
+    const hasSTAT = specimens.some((s) => s.priority === PRIORITY.STAT);
+    const priority = hasSTAT ? PRIORITY.STAT : PRIORITY.ROUTINE;
+    const station = STATIONS.find((s) => s.id === stationId);
+    const stationName = station?.name || stationId;
+    const priorityTag = hasSTAT ? '[STAT] ' : '';
+
+    // Create a combined metadata for the batch
+    const batchMetadata = {
+      specimenRecord: specimens[0], // Primary specimen for display
+      specimenRecords: specimens, // Full batch
+      dispatchTime,
+      isBatch: true,
+      batchCount: specimens.length,
+    };
+
+    enqueue(stationId, 'DISPATCH', priority, batchMetadata);
+    addLog(
+      `[QUEUE] ${priorityTag}Đã thêm lệnh DISPATCH ${specimens.length} mẫu -> ${stationName}`,
+      hasSTAT ? 'error' : 'info'
+    );
+
+    // Clear scan list and current specimen
+    setScanList([]);
+    setCurrentSpecimen(null);
+
     publishQueueSync();
     triggerQueueIfIdle();
     return true;
@@ -1223,40 +1387,40 @@ export default function useScada() {
       // Reset so next login re-hydrates robot state from server logs
       initialHydrationDoneRef.current = false;
     };
-  }, [debouncedHydrate, isAuthenticated]);
+  }, [debouncedHydrate, isAuthenticated, hydratePersistedData]);
 
   // ── Cross-device sync via Socket.io ────────────────────────────────
   // Attach callback refs so the socket hook can invoke our sync handlers
   // whenever another device broadcasts state or data changes.
   useEffect(() => {
     if (!isAuthenticated) {
-      opc.onStateSyncRef.current = null;
-      opc.onDataSyncRef.current = null;
+      if (opc.setOnStateSync) opc.setOnStateSync(null);
+      if (opc.setOnDataSync) opc.setOnDataSync(null);
       return;
     }
 
     // Handle incoming UI state snapshots from other devices
-    opc.onStateSyncRef.current = (data) => {
+    if (opc.setOnStateSync) opc.setOnStateSync((data) => {
       if (!data || typeof data !== 'object') return;
       // Ignore our own echoed messages
       if (data.sourceTabId === SCADA_TAB_ID) return;
       if (data.type === 'snapshot' && shouldApplySyncPayload(data)) {
         applySyncSnapshot(data.snapshot);
       }
-    };
+    });
 
     // Handle incoming data change notifications from other devices/server
-    opc.onDataSyncRef.current = (data) => {
+    if (opc.setOnDataSync) opc.setOnDataSync((data) => {
       if (!data || typeof data !== 'object') return;
       if (data.type === 'sync-required') {
         // FIX [H1]: Use debounced hydration to avoid double-calls
         debouncedHydrate({ syncStations: false });
       }
-    };
+    });
 
     return () => {
-      opc.onStateSyncRef.current = null;
-      opc.onDataSyncRef.current = null;
+      if (opc.setOnStateSync) opc.setOnStateSync(null);
+      if (opc.setOnDataSync) opc.setOnDataSync(null);
     };
   }, [isAuthenticated, applySyncSnapshot, shouldApplySyncPayload, debouncedHydrate, opc]);
 
@@ -1332,10 +1496,15 @@ export default function useScada() {
     moveId,
     // Specimens
     currentSpecimen,
+    scanList,
+    scanFeedback,
     scannedSpecimens,
     transportedSpecimens,
     maintenanceMode,
     registerScannedSpecimen,
+    lookupBarcode,
+    removeFromScanList,
+    clearScanList,
     clearCurrentSpecimen,
     setMaintenanceState,
     hydratePersistedData,
@@ -1343,6 +1512,7 @@ export default function useScada() {
     callRobot,
     dispatchRobot,
     dispatchScannedSpecimen,
+    dispatchBatchSpecimens,
     emergencyStop,
     acknowledgeTask,
     // Queue management
@@ -1369,16 +1539,22 @@ export default function useScada() {
     animPos,
     moveId,
     currentSpecimen,
+    scanList,
+    scanFeedback,
     scannedSpecimens,
     transportedSpecimens,
     maintenanceMode,
     registerScannedSpecimen,
+    lookupBarcode,
+    removeFromScanList,
+    clearScanList,
     clearCurrentSpecimen,
     setMaintenanceState,
     hydratePersistedData,
     callRobot,
     dispatchRobot,
     dispatchScannedSpecimen,
+    dispatchBatchSpecimens,
     emergencyStop,
     acknowledgeTask,
     queue,

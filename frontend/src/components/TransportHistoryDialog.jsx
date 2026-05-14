@@ -18,6 +18,7 @@ import {
   Fade,
 } from '@mui/material';
 import { FileDownload } from '@mui/icons-material';
+import * as XLSX from 'xlsx';
 import { PRIORITY } from '../constants';
 
 function buildPriorityLabel(priority) {
@@ -56,7 +57,7 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
     return records.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   }, [records, page, rowsPerPage]);
 
-  const handleExportExcelReport = useCallback(async () => {
+  const handleExportExcelReport = useCallback(() => {
     if (!hasRecords) return;
 
     const generatedAt = new Date();
@@ -101,7 +102,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
       ...dataRows,
     ];
 
-    const XLSX = await import('xlsx');
     const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'BaoCaoVanChuyen');
@@ -231,7 +231,7 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
           disabled={!hasRecords}
           sx={{ fontWeight: 700 }}
         >
-          Xuất báo cáo (.xlsx)
+          Xuất báo cáo
         </Button>
       </DialogActions>
     </Dialog>

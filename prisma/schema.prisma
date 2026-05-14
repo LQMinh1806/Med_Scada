@@ -17,6 +17,13 @@ enum SpecimenPriority {
   ROUTINE
 }
 
+enum SpecimenStatus {
+  PENDING
+  SCANNED
+  IN_TRANSIT
+  COMPLETED
+}
+
 enum TransportStatus {
   RUNNING
   ARRIVED
@@ -54,14 +61,17 @@ model Specimen {
   patientName      String
   testType         String
   priority         SpecimenPriority  @default(ROUTINE)
-  scanTime         DateTime          @default(now())
-  scannedById      Int
-  scannedBy        User              @relation(fields: [scannedById], references: [id])
+  status           SpecimenStatus    @default(PENDING)
+  scanTime         DateTime?
+  scannedById      Int?
+  scannedBy        User?             @relation(fields: [scannedById], references: [id])
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   transportRecords TransportRecord[]
 
   @@index([scannedById])
+  @@index([status])
+  @@index([barcode])
 }
 
 model TransportRecord {

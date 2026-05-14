@@ -25,19 +25,14 @@
 #include <ESP8266WiFi.h>
 #include <SoftwareSerial.h>
 #include <WiFiClient.h>
+#include <WiFiUdp.h>
+#include "WiFiSettings.h"
 
-// ── Configuration ───────────────────────────────────────────────────────────
-// WiFi credentials
-const char *WIFI_SSID = "Quang Sang";
-const char *WIFI_PASSWORD = "0907771191";
-
-// Backend server address (e.g., "http://192.168.1.91:3000" - dùng IP máy tính
-// đang chạy server)
-const char *SERVER_URL =
-    "http://192.168.1.91:3000"; // Thay 192.168.1.91 bằng IP thực tế của bạn
-
-// API key — must match ESP32_API_KEY in backend .env
-const char *API_KEY = "esp32-fingerprint-secret-change-me";
+#ifdef ESP32
+#include <SPIFFS.h>
+#else
+#include <LittleFS.h>
+#endif
 
 // ── Hardware Pins (ESP8266 NodeMCU) ─────────────────────────────────────────
 #define FINGERPRINT_RX D1 // TX của cảm biến nối vào D1 của ESP8266
@@ -49,13 +44,19 @@ const char *API_KEY = "esp32-fingerprint-secret-change-me";
 #define BUZZER_PIN D5  // Chân cho còi chip (tuỳ chọn)
 
 // ── Timing Configuration (ms) ──────────────────────────────────────────────
-#define POLL_INTERVAL_MS 2000  // How often to poll /api/fingerprint/status
+#define POLL_INTERVAL_MATCH_MS 200   // Fallback poll khi ở match mode
+#define POLL_INTERVAL_ENROLL_MS 2000 // Poll chậm hơn khi đang enroll
 #define WIFI_RECONNECT_MS 5000 // Wait between WiFi reconnect attempts
-#define SCAN_DEBOUNCE_MS 3000  // Cooldown after successful scan
+#define SCAN_DEBOUNCE_MS 1500  // Cooldown after successful scan
 #define ENROLL_STEP_TIMEOUT_MS 15000 // Max wait per enrollment step
-#define HTTP_TIMEOUT_MS 10000        // HTTP request timeout
+#define HTTP_TIMEOUT_MS 5000         // HTTP request timeout
 #define LED_BLINK_FAST_MS 150        // Fast blink interval
 #define LED_BLINK_SLOW_MS 500        // Slow blink interval
+
+// ── UDP Push Trigger ─────────────────────────────────────────────────────────
+// Backend broadcasts MEDSCADA_LOGIN_TRIGGER → ESP8266 polls server immediately
+#define UDP_TRIGGER_PORT 3031
+#define UDP_TRIGGER_MSG  "MEDSCADA_LOGIN_TRIGGER"
 
 // ── Fingerprint Sensor Setup ────────────────────────────────────────────────
 SoftwareSerial fingerSerial(FINGERPRINT_RX, FINGERPRINT_TX);
@@ -87,9 +88,21 @@ unsigned long lastLedToggle = 0;
 unsigned long lastScanTime = 0;
 unsigned long enrollStepStart = 0;
 bool ledState = false;
+int consecutivePollFailures = 0; // Track consecutive connection failures
 
-// ── Function Prototypes ─────────────────────────────────────────────────────
+// Dùng global WiFiClient để tránh bị tràn bộ nhớ/cạn kiệt socket
+WiFiClient wifiClient;
+#ifdef ESP8266
+#include <WiFiClientSecure.h>
+#endif
+WiFiClientSecure wifiClientSecure;
+
+// UDP trigger listener — backend push để ESP8266 poll ngay lập tức
+WiFiUDP udpTrigger;
+bool udpTriggerStarted = false;
+
 void connectWiFi();
+bool discoverServer();
 void pollServerStatus();
 void handleMatchMode();
 void handleEnrollMode();
@@ -136,21 +149,21 @@ void setup() {
     Serial.println("[FP] ✓ Fingerprint sensor detected!");
     Serial.print("[FP]   Capacity: ");
     Serial.println(finger.capacity);
-    Serial.print("[FP]   Security level: ");
-    Serial.println(finger.security_level);
-
-    // Read sensor parameters
-    finger.getParameters();
-    Serial.print("[FP]   Stored templates: ");
-    finger.getTemplateCount();
-    Serial.println(finger.templateCount);
   } else {
     Serial.println("[FP] ✗ Fingerprint sensor NOT found! Check wiring.");
     currentState = STATE_ERROR;
     return;
   }
 
-  // Start WiFi connection
+  // Check if we should force config portal (Hold Flash button D3/GPIO0 during boot)
+  pinMode(D3, INPUT_PULLUP);
+  delay(100);
+  if (digitalRead(D3) == LOW) {
+    Serial.println("[Config] Flash button detected. Forcing config portal...");
+    WiFiSettings.portal();
+  }
+
+  // Start WiFi connection (using WiFiSettings)
   currentState = STATE_WIFI_CONNECTING;
   connectWiFi();
 }
@@ -192,10 +205,52 @@ void loop() {
     Serial.println(" dBm");
     digitalWrite(LED_STATUS,
                  LOW); // Solid ON = connected (Active LOW on NodeMCU)
+                 
+    // Try to auto-discover server
+    discoverServer();
+    
+    // Nếu vẫn không có server_url (bị bỏ trống lúc cài đặt) thì ép mở lại web config
+    if (WiFiSettings.server_url.isEmpty()) {
+      Serial.println("[WiFi] ⚠️ Backend URL is EMPTY. Forcing Config Portal...");
+      delay(2000);
+      WiFiSettings.portal();
+    }
+
+    // Bắt đầu lắng nghe UDP trigger từ backend
+    if (!udpTriggerStarted) {
+      if (udpTrigger.begin(UDP_TRIGGER_PORT)) {
+        udpTriggerStarted = true;
+        Serial.print("[UDP] Listening for push triggers on port ");
+        Serial.println(UDP_TRIGGER_PORT);
+      } else {
+        Serial.println("[UDP] ⚠️ Failed to start trigger listener.");
+      }
+    }
+  }
+
+  // ── UDP Push Trigger — backend có thể kích hoạt poll ngay lập tức ────────
+  // Khi frontend nhấn nút đăng nhập, backend broadcast UDP → ESP8266 nhận
+  // và poll server ngay, không cần chờ vòng poll tiếp theo (< 5ms trên LAN).
+  if (udpTriggerStarted) {
+    int triggerSize = udpTrigger.parsePacket();
+    if (triggerSize > 0) {
+      char triggerBuf[32];
+      int len = udpTrigger.read(triggerBuf, sizeof(triggerBuf) - 1);
+      if (len > 0) {
+        triggerBuf[len] = 0;
+        if (strcmp(triggerBuf, UDP_TRIGGER_MSG) == 0) {
+          Serial.println("[UDP] ⚡ Login trigger received! Polling immediately...");
+          lastPollTime = 0; // Reset để poll ngay trong vòng lặp này
+        }
+      }
+    }
   }
 
   // ── Poll server for mode (match vs enroll) ──────────────────────────────
-  if (now - lastPollTime >= POLL_INTERVAL_MS) {
+  // Adaptive polling (fallback khi không có UDP trigger):
+  // match mode = 200ms, enroll mode = 2000ms.
+  unsigned long pollInterval = (currentMode == "match") ? POLL_INTERVAL_MATCH_MS : POLL_INTERVAL_ENROLL_MS;
+  if (now - lastPollTime >= pollInterval) {
     lastPollTime = now;
     pollServerStatus();
   }
@@ -235,49 +290,106 @@ void loop() {
     break;
   }
 
-  delay(50); // Small yield to prevent WDT reset
+  delay(10); // Nhỏ hơn để phản hồi UDP trigger nhanh hơn
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// WiFi Connection
+// WiFi Connection (WiFiSettings)
 // ═══════════════════════════════════════════════════════════════════════════════
 void connectWiFi() {
-  Serial.print("[WiFi] Connecting to ");
-  Serial.print(WIFI_SSID);
-  Serial.println("...");
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
+  WiFiSettings.hostname = "MedSCADA_Fingerprint";
+  
+  // Try to connect, start portal if fails
+  if (!WiFiSettings.connect(true, 30)) {
+    Serial.println("[WiFi] Connection failed. Restarting...");
+    delay(3000);
+    ESP.restart();
   }
+}
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(" OK!");
-  } else {
-    Serial.println(" FAILED (will retry)");
+// ═══════════════════════════════════════════════════════════════════════════════
+// Discover Backend Server (UDP Broadcast)
+// ═══════════════════════════════════════════════════════════════════════════════
+bool discoverServer() {
+  WiFiUDP udp;
+  if (!udp.begin(3030)) {
+    Serial.println("[Discovery] UDP failed to bind");
+    return false;
   }
+  
+  // Calculate subnet broadcast address (e.g. 192.168.1.255)
+  uint32_t ip = WiFi.localIP();
+  uint32_t mask = WiFi.subnetMask();
+  IPAddress broadcastIp(ip | ~mask);
+  Serial.print("[Discovery] Broadcasting to ");
+  Serial.print(broadcastIp);
+  Serial.println(":3030 ...");
+  
+  // Send broadcast multiple times to ensure delivery
+  for (int i=0; i<3; i++) {
+    udp.beginPacket(broadcastIp, 3030);
+    udp.write("MEDSCADA_DISCOVER");
+    udp.endPacket();
+    delay(50);
+  }
+  
+  unsigned long start = millis();
+  while (millis() - start < 4000) {
+    int packetSize = udp.parsePacket();
+    if (packetSize) {
+      char packetBuffer[255];
+      int len = udp.read(packetBuffer, 255);
+      if (len > 0) packetBuffer[len] = 0;
+      
+      String msg = String(packetBuffer);
+      if (msg.startsWith("MEDSCADA_SERVER:")) {
+        String port = msg.substring(16);
+        IPAddress remote = udp.remoteIP();
+        
+        String newUrl = "http://" + remote.toString() + ":" + port;
+        Serial.println("[Discovery] ✓ Server found at: " + newUrl);
+        
+        // Cập nhật lại URL vào RAM và lưu vào Flash theo SSID
+        if (WiFiSettings.server_url != newUrl) {
+          WiFiSettings.saveServerUrl(newUrl);
+        }
+        return true;
+      }
+    }
+    delay(50);
+  }
+  
+  Serial.println("[Discovery] ✗ Server not found via UDP. Using saved URL.");
+  Serial.print("[Discovery] Saved URL is: '");
+  Serial.print(WiFiSettings.server_url);
+  Serial.println("'");
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Poll Server Status — GET /api/fingerprint/status
 // ═══════════════════════════════════════════════════════════════════════════════
 void pollServerStatus() {
-  WiFiClient client;
-  HTTPClient http;
-  String url = String(SERVER_URL) + "/api/fingerprint/status";
+  if (WiFiSettings.server_url.isEmpty()) return;
 
-  http.begin(client, url);
+  HTTPClient http;
+  String url = WiFiSettings.server_url + "/api/fingerprint/status";
+
+  if (url.startsWith("https://")) {
+    wifiClientSecure.setInsecure();
+    http.begin(wifiClientSecure, url);
+  } else {
+    http.begin(wifiClient, url);
+  }
+  
+  http.setReuse(true); // Enable HTTP Keep-Alive
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("X-API-Key", WiFiSettings.api_key);
 
   int httpCode = http.GET();
 
   if (httpCode == 200) {
+    consecutivePollFailures = 0; // Reset counter on success
     String payload = http.getString();
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload);
@@ -307,11 +419,31 @@ void pollServerStatus() {
       Serial.println(err.c_str());
     }
   } else if (httpCode > 0) {
+    consecutivePollFailures = 0; // Reset counter (server reachable, just returned error code)
     Serial.print("[Poll] Server error: HTTP ");
     Serial.println(httpCode);
   } else {
+    consecutivePollFailures++;
     Serial.print("[Poll] Connection failed: ");
     Serial.println(http.errorToString(httpCode));
+    
+    if (consecutivePollFailures >= 10) {
+      Serial.println("[Poll] ⚠️ Too many connection failures. Clearing saved URL and restarting...");
+      
+      // Attempt to clear saved URL file to force portal on next boot
+      String urlFile = "/server-url-" + WiFiSettings.ssid;
+      #ifdef ESP32
+        SPIFFS.remove(urlFile);
+        SPIFFS.remove("/server-url");
+      #else
+        LittleFS.remove(urlFile);
+        LittleFS.remove("/server-url");
+      #endif
+      
+      WiFiSettings.server_url = "";
+      delay(2000);
+      ESP.restart();
+    }
   }
 
   http.end();
@@ -533,14 +665,22 @@ void handleEnrollMode() {
 // HTTP: POST /api/fingerprint/match
 // ═══════════════════════════════════════════════════════════════════════════════
 bool sendMatchResult(int fingerprintId) {
-  WiFiClient client;
-  HTTPClient http;
-  String url = String(SERVER_URL) + "/api/fingerprint/match";
+  if (WiFiSettings.server_url.isEmpty()) return false;
 
-  http.begin(client, url);
+  HTTPClient http;
+  String url = WiFiSettings.server_url + "/api/fingerprint/match";
+
+  if (url.startsWith("https://")) {
+    wifiClientSecure.setInsecure();
+    http.begin(wifiClientSecure, url);
+  } else {
+    http.begin(wifiClient, url);
+  }
+  
+  http.setReuse(true); // Enable HTTP Keep-Alive
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("X-API-Key", WiFiSettings.api_key);
 
   JsonDocument doc;
   doc["fingerprintId"] = fingerprintId;
@@ -579,14 +719,22 @@ bool sendMatchResult(int fingerprintId) {
 // HTTP: POST /api/fingerprint/enroll-step
 // ═══════════════════════════════════════════════════════════════════════════════
 bool sendEnrollStep(int step, int userId) {
-  WiFiClient client;
-  HTTPClient http;
-  String url = String(SERVER_URL) + "/api/fingerprint/enroll-step";
+  if (WiFiSettings.server_url.isEmpty()) return false;
 
-  http.begin(client, url);
+  HTTPClient http;
+  String url = WiFiSettings.server_url + "/api/fingerprint/enroll-step";
+
+  if (url.startsWith("https://")) {
+    wifiClientSecure.setInsecure();
+    http.begin(wifiClientSecure, url);
+  } else {
+    http.begin(wifiClient, url);
+  }
+  
+  http.setReuse(true); // Enable HTTP Keep-Alive
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("X-API-Key", WiFiSettings.api_key);
 
   JsonDocument doc;
   doc["step"] = step;
@@ -613,14 +761,22 @@ bool sendEnrollStep(int step, int userId) {
 // HTTP: POST /api/fingerprint/enroll
 // ═══════════════════════════════════════════════════════════════════════════════
 bool sendEnrollResult(int fingerprintId, int userId) {
-  WiFiClient client;
-  HTTPClient http;
-  String url = String(SERVER_URL) + "/api/fingerprint/enroll";
+  if (WiFiSettings.server_url.isEmpty()) return false;
 
-  http.begin(client, url);
+  HTTPClient http;
+  String url = WiFiSettings.server_url + "/api/fingerprint/enroll";
+
+  if (url.startsWith("https://")) {
+    wifiClientSecure.setInsecure();
+    http.begin(wifiClientSecure, url);
+  } else {
+    http.begin(wifiClient, url);
+  }
+  
+  http.setReuse(true); // Enable HTTP Keep-Alive
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("X-API-Key", WiFiSettings.api_key);
 
   JsonDocument doc;
   doc["fingerprintId"] = fingerprintId;

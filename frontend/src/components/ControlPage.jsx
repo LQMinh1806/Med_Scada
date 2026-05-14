@@ -8,16 +8,13 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   Grid,
-  Switch,
   Stack,
-  TextField,
   Typography,
   Fade,
   alpha,
 } from '@mui/material';
-import { BuildCircle, PriorityHigh } from '@mui/icons-material';
+import { PriorityHigh } from '@mui/icons-material';
 import StationControlCard from './StationControlCard';
 import SpecimenScanPanel from './SpecimenScanPanel';
 import EStopButton from './EStopButton';
@@ -31,10 +28,12 @@ const ControlPage = memo(function ControlPage({ scada }) {
     stations,
     robotState,
     callRobot,
-    currentSpecimen,
-    registerScannedSpecimen,
-    clearCurrentSpecimen,
-    dispatchScannedSpecimen,
+    scanList,
+    scanFeedback,
+    lookupBarcode,
+    removeFromScanList,
+    clearScanList,
+    dispatchBatchSpecimens,
     emergencyStop,
     maintenanceMode,
     queue,
@@ -45,33 +44,22 @@ const ControlPage = memo(function ControlPage({ scada }) {
 
   const [dispatchDialog, setDispatchDialog] = useState({ open: false, station: null });
 
-  const canDispatch = Boolean(currentSpecimen) && !maintenanceMode.enabled;
-  const isSTAT = currentSpecimen?.priority === PRIORITY.STAT;
-
-  const handleScan = useCallback(
-    (specimenData) => {
-      const result = registerScannedSpecimen(specimenData);
-      if (result && result.priority === PRIORITY.STAT) {
-        notifications.notifyStatSpecimen(result.barcode);
-      }
-      return result;
-    },
-    [registerScannedSpecimen, notifications]
-  );
+  const canDispatch = scanList.length > 0 && !maintenanceMode.enabled;
+  const hasSTAT = scanList.some((s) => s.priority === PRIORITY.STAT);
 
   const handleCall = useCallback(
     (stationId) => {
-      callRobot(stationId, isSTAT ? PRIORITY.STAT : PRIORITY.ROUTINE);
+      callRobot(stationId, hasSTAT ? PRIORITY.STAT : PRIORITY.ROUTINE);
     },
-    [callRobot, isSTAT]
+    [callRobot, hasSTAT]
   );
 
   const handleDispatchRequest = useCallback(
     (station) => {
-      if (!currentSpecimen || maintenanceMode.enabled) return;
+      if (scanList.length === 0 || maintenanceMode.enabled) return;
       setDispatchDialog({ open: true, station });
     },
-    [currentSpecimen, maintenanceMode.enabled]
+    [scanList.length, maintenanceMode.enabled]
   );
 
   const handleCancelDispatch = useCallback(() => {
@@ -79,14 +67,14 @@ const ControlPage = memo(function ControlPage({ scada }) {
   }, []);
 
   const handleConfirmDispatch = useCallback(() => {
-    if (!dispatchDialog.station || !currentSpecimen) return;
-    const barcode = currentSpecimen.barcode;
+    if (!dispatchDialog.station || scanList.length === 0) return;
     const stationName = dispatchDialog.station.name;
-    const dispatched = dispatchScannedSpecimen(dispatchDialog.station.id);
+    const count = scanList.length;
+    const dispatched = dispatchBatchSpecimens(dispatchDialog.station.id);
     if (!dispatched) return;
-    notifications.notifyDispatchSuccess(barcode, stationName);
+    notifications.notifyDispatchSuccess(`${count} mẫu`, stationName);
     setDispatchDialog({ open: false, station: null });
-  }, [currentSpecimen, dispatchDialog.station, dispatchScannedSpecimen, notifications]);
+  }, [scanList, dispatchDialog.station, dispatchBatchSpecimens, notifications]);
 
 
   const handleEStop = useCallback(() => {
@@ -220,9 +208,11 @@ const ControlPage = memo(function ControlPage({ scada }) {
           )}
 
           <SpecimenScanPanel
-            currentSpecimen={currentSpecimen}
-            onScan={handleScan}
-            onClear={clearCurrentSpecimen}
+            scanList={scanList}
+            onLookupBarcode={lookupBarcode}
+            onRemoveFromList={removeFromScanList}
+            onClearList={clearScanList}
+            scanFeedback={scanFeedback}
           />
 
           <Grid container spacing={1} justifyContent="center" alignItems="stretch">
@@ -235,7 +225,7 @@ const ControlPage = memo(function ControlPage({ scada }) {
                   onCall={handleCall}
                   onDispatchRequest={handleDispatchRequest}
                   canDispatch={canDispatch}
-                  hasStatSpecimen={isSTAT}
+                  hasStatSpecimen={hasSTAT}
                   disableActions={maintenanceMode.enabled}
                   queueInfo={queueInfo}
                   currentUser={scada.currentUser}
@@ -253,53 +243,77 @@ const ControlPage = memo(function ControlPage({ scada }) {
           >
             <DialogTitle
               sx={{
-                bgcolor: isSTAT ? '#C41C1C' : 'primary.main',
+                bgcolor: hasSTAT ? '#C41C1C' : 'primary.main',
                 color: '#111',
               }}
             >
-              {isSTAT && <PriorityHigh sx={{ mr: 1, verticalAlign: 'middle' }} />}
-              {isSTAT ? 'DISPATCH KHẨN CẤP (STAT)' : 'Xác nhận dispatch cabin'}
+              {hasSTAT && <PriorityHigh sx={{ mr: 1, verticalAlign: 'middle' }} />}
+              {hasSTAT ? 'DISPATCH KHẨN CẤP (STAT)' : 'Xác nhận dispatch cabin'}
             </DialogTitle>
             <DialogContent dividers sx={{ pt: 2 }}>
               <Typography sx={{ mb: 2 }}>
-                Xác nhận vận chuyển cabin cùng mẫu bệnh phẩm đến{' '}
+                Xác nhận vận chuyển cabin cùng{' '}
+                <strong>{scanList.length} mẫu bệnh phẩm</strong> đến{' '}
                 <strong>{dispatchDialog.station?.name}</strong>?
               </Typography>
 
-              {currentSpecimen ? (
+              {scanList.length > 0 ? (
                 <Box
                   sx={{
                     p: 2,
                     borderRadius: 2,
-                    bgcolor: isSTAT ? alpha('#C41C1C', 0.07) : alpha('#65B5FF', 0.12),
-                    border: `1px solid ${isSTAT ? alpha('#C41C1C', 0.2) : alpha('#65B5FF', 0.25)}`,
+                    bgcolor: hasSTAT ? alpha('#C41C1C', 0.07) : alpha('#65B5FF', 0.12),
+                    border: `1px solid ${hasSTAT ? alpha('#C41C1C', 0.2) : alpha('#65B5FF', 0.25)}`,
+                    maxHeight: 200,
+                    overflow: 'auto',
                   }}
                 >
-                  <Stack spacing={1}>
-                    <Typography>
-                      <strong>Barcode:</strong> {currentSpecimen.barcode}
-                    </Typography>
-                    <Typography>
-                      <strong>Bệnh nhân:</strong> {currentSpecimen.patientName}
-                    </Typography>
-                    <Typography>
-                      <strong>Xét nghiệm:</strong> {currentSpecimen.testType}
-                    </Typography>
-                    <Typography>
-                      <strong>Thời gian quét:</strong> {currentSpecimen.scanTime}
-                    </Typography>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <strong>Ưu tiên:</strong>
-                      <Chip
-                        label={isSTAT ? 'STAT - Khẩn cấp' : 'Routine'}
-                        size="small"
+                  <Stack spacing={0.5}>
+                    {scanList.map((specimen, idx) => (
+                      <Box
+                        key={specimen.barcode}
                         sx={{
-                          fontWeight: 800,
-                          bgcolor: isSTAT ? '#C41C1C' : '#0BDF50',
-                          color: '#111',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.5,
+                          py: 0.5,
+                          borderBottom: idx < scanList.length - 1
+                            ? `1px solid ${alpha('#000', 0.06)}`
+                            : 'none',
                         }}
-                      />
-                    </Box>
+                      >
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontFamily: '"IBM Plex Mono", monospace',
+                            fontWeight: 700,
+                            minWidth: 90,
+                            color: 'text.primary',
+                          }}
+                        >
+                          {specimen.barcode}
+                        </Typography>
+                        <Typography variant="body2" sx={{ flexGrow: 1, color: 'text.secondary' }}>
+                          {specimen.patientName}
+                        </Typography>
+                        <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                          {specimen.testType}
+                        </Typography>
+                        {specimen.priority === PRIORITY.STAT && (
+                          <Chip
+                            label="STAT"
+                            size="small"
+                            sx={{
+                              fontWeight: 800,
+                              bgcolor: '#C41C1C',
+                              color: '#fff',
+                              fontSize: '0.65rem',
+                              height: 20,
+                            }}
+                          />
+                        )}
+                      </Box>
+                    ))}
                   </Stack>
                 </Box>
               ) : (
@@ -314,10 +328,10 @@ const ControlPage = memo(function ControlPage({ scada }) {
                 variant="contained"
                 color="primary"
                 onClick={handleConfirmDispatch}
-                disabled={!currentSpecimen}
+                disabled={scanList.length === 0}
                 sx={{ fontWeight: 800, minWidth: 140, minHeight: 46 }}
               >
-                Xác nhận Dispatch
+                Dispatch {scanList.length} mẫu
               </Button>
             </DialogActions>
           </Dialog>

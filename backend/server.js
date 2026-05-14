@@ -19,6 +19,7 @@ import express from 'express';
 import cors from 'cors';
 import os from 'os';
 import fs from 'fs';
+import dgram from 'dgram';
 import prismaPkg from '@prisma/client';
 import { Server as SocketIOServer } from 'socket.io';
 
@@ -34,6 +35,7 @@ import createAuthRoutes from './routes/auth.js';
 import createUserRoutes from './routes/users.js';
 import createDataRoutes from './routes/data.js';
 import createFingerprintRoutes from './routes/fingerprint.js';
+import createSpecimenRoutes from './routes/specimens.js';
 
 // ── Initialize core services ─────────────────────────────────────────────────
 const { PrismaClient } = prismaPkg;
@@ -94,6 +96,7 @@ app.use('/api/auth', createAuthRoutes(prisma));
 app.use('/api/users', createUserRoutes(prisma));
 app.use('/api/fingerprint', createFingerprintRoutes(prisma, io));
 // Data routes are mounted at /api directly (health, events, bootstrap, etc.)
+app.use('/api/specimens', createSpecimenRoutes(prisma));
 app.use('/api', dataRoutes);
 
 // ── SPA catch-all ────────────────────────────────────────────────────────────
@@ -132,6 +135,61 @@ async function startServer() {
   } catch (err) {
     // Non-fatal: will auto-reconnect in the background
     console.error('[Server] OPC UA init failed (will retry):', err.message);
+  }
+
+  // ── Start UDP Discovery Listener ───────────────────────────────────────────
+  const udpServer = dgram.createSocket('udp4');
+  
+  udpServer.on('message', (msg, rinfo) => {
+    if (msg.toString() === 'MEDSCADA_DISCOVER') {
+      const reply = `MEDSCADA_SERVER:${PORT}`;
+      // Send reply directly back to the ESP8266
+      udpServer.send(reply, rinfo.port, rinfo.address);
+    }
+  });
+  
+  udpServer.on('error', (err) => {
+    console.error(`[Server] UDP Discovery error:\n${err.message}`);
+    udpServer.close();
+  });
+  
+  try {
+    udpServer.bind(3030, () => {
+      console.log(`[Server] UDP Discovery service listening on port 3030`);
+      udpServer.setBroadcast(true);
+      
+      // Calculate subnet broadcast addresses for all network interfaces
+      const getBroadcastAddresses = () => {
+        const addresses = [];
+        const interfaces = os.networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+          for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal && iface.netmask) {
+              const ipParts = iface.address.split('.');
+              const maskParts = iface.netmask.split('.');
+              const broadcastParts = [];
+              for (let i = 0; i < 4; i++) {
+                broadcastParts.push(parseInt(ipParts[i]) | (~parseInt(maskParts[i]) & 255));
+              }
+              addresses.push(broadcastParts.join('.'));
+            }
+          }
+        }
+        return addresses;
+      };
+
+      // Actively broadcast to bypass Windows Firewall inbound blocking
+      // Sending to specific subnet broadcast IPs guarantees correct routing on Windows
+      setInterval(() => {
+        const reply = `MEDSCADA_SERVER:${PORT}`;
+        const bcastAddrs = getBroadcastAddresses();
+        for (const bcast of bcastAddrs) {
+          udpServer.send(reply, 3030, bcast);
+        }
+      }, 2000);
+    });
+  } catch (err) {
+    console.error(`[Server] Failed to bind UDP Discovery: ${err.message}`);
   }
 
   httpServer.listen(PORT, HOST, () => {

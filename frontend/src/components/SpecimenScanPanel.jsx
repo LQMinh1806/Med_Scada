@@ -1,217 +1,376 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useState, useEffect, useRef } from 'react';
 import {
   Alert,
   Box,
   Button,
   Chip,
-  Grid,
+  IconButton,
   Paper,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
   alpha,
   Fade,
+  Zoom,
+  keyframes,
 } from '@mui/material';
-import { QrCodeScanner, PriorityHigh } from '@mui/icons-material';
-import PrioritySelector from './PrioritySelector';
-import { PRIORITY, TEST_TYPES, PATIENT_NAMES } from '../constants';
+import {
+  QrCodeScanner,
+  PriorityHigh,
+  Delete,
+  CheckCircle,
+  ErrorOutlineOutlined,
+} from '@mui/icons-material';
+import { PRIORITY } from '../constants';
 
-function randomItem(items) {
-  return items[Math.floor(Math.random() * items.length)];
-}
+const flashGreen = keyframes`
+  0% { background-color: transparent; }
+  20% { background-color: rgba(11, 223, 80, 0.25); }
+  100% { background-color: transparent; }
+`;
 
-function buildMockSpecimen(barcodeOverride, priority) {
-  const randomCode = `SP-${Math.floor(100000 + Math.random() * 900000)}`;
-  return {
-    barcode: (barcodeOverride || randomCode).trim(),
-    patientName: randomItem(PATIENT_NAMES),
-    testType: randomItem(TEST_TYPES),
-    priority,
-    scanTime: new Date().toLocaleString(),
-  };
-}
+const flashRed = keyframes`
+  0% { background-color: transparent; }
+  20% { background-color: rgba(196, 28, 28, 0.2); }
+  100% { background-color: transparent; }
+`;
+
+const slideIn = keyframes`
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
+`;
+
 
 /**
- * Specimen scanning panel with priority selection.
- * Handles barcode input, mock scanning, and displays current specimen info.
+ * Batch Specimen Scanning Panel with global HID barcode scanner support.
+ * - Listens for keyboard events globally (HID scanners behave like keyboards)
+ * - Looks up scanned barcodes via API to get patient data
+ * - Maintains a scan list that can be dispatched as a batch
  */
 const SpecimenScanPanel = memo(function SpecimenScanPanel({
-  currentSpecimen,
-  onScan,
-  onClear,
+  scanList,
+  onLookupBarcode,
+  onRemoveFromList,
+  onClearList,
+  scanFeedback,
 }) {
-  const [scannerInput, setScannerInput] = useState('');
-  const [scanError, setScanError] = useState('');
-  const [priority, setPriority] = useState(PRIORITY.ROUTINE);
+  const [manualInput, setManualInput] = useState('');
+  const scanBufferRef = useRef('');
+  const scanTimerRef = useRef(null);
+  const containerRef = useRef(null);
 
-  const isSTAT = currentSpecimen?.priority === PRIORITY.STAT;
+  const hasSTAT = scanList.some((s) => s.priority === PRIORITY.STAT);
 
-  const handleScan = useCallback(
-    (barcodeValue) => {
-      const value = (barcodeValue || '').trim();
-      if (!value) {
-        setScanError('Vui lòng nhập/quét barcode trước khi dispatch.');
+  // ── Global keyboard listener for HID barcode scanner ──────────────────
+  useEffect(() => {
+    const SCAN_CHAR_TIMEOUT_MS = 50; // Barcode scanners type chars < 50ms apart
+
+    const handleKeyDown = (event) => {
+      // Skip if user is typing in an input/textarea
+      const tagName = event.target.tagName;
+      if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
         return;
       }
-      const result = onScan(buildMockSpecimen(value, priority));
-      if (result) {
-        setScanError('');
-        setScannerInput('');
+
+      // Enter key = end of barcode scan
+      if (event.key === 'Enter' && scanBufferRef.current.length > 2) {
+        event.preventDefault();
+        const barcode = scanBufferRef.current.trim();
+        scanBufferRef.current = '';
+        if (scanTimerRef.current) {
+          clearTimeout(scanTimerRef.current);
+          scanTimerRef.current = null;
+        }
+        if (barcode) {
+          onLookupBarcode(barcode);
+        }
+        return;
+      }
+
+      // Only accumulate printable characters
+      if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        scanBufferRef.current += event.key;
+
+        // Reset timer — if no more chars arrive within timeout, clear buffer
+        if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
+        scanTimerRef.current = setTimeout(() => {
+          scanBufferRef.current = '';
+          scanTimerRef.current = null;
+        }, SCAN_CHAR_TIMEOUT_MS);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
+    };
+  }, [onLookupBarcode]);
+
+  // ── Manual barcode entry ──────────────────────────────────────────────
+  const handleManualScan = useCallback(() => {
+    const barcode = manualInput.trim();
+    if (!barcode) return;
+    onLookupBarcode(barcode);
+    setManualInput('');
+  }, [manualInput, onLookupBarcode]);
+
+  const handleManualKeyDown = useCallback(
+    (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleManualScan();
       }
     },
-    [onScan, priority]
+    [handleManualScan]
   );
-
-  const handleScannerKeyDown = useCallback(
-    (event) => {
-      if (event.key !== 'Enter') return;
-      event.preventDefault();
-      handleScan(scannerInput);
-    },
-    [handleScan, scannerInput]
-  );
-
-  const handleSimulateScan = useCallback(() => {
-    const result = onScan(buildMockSpecimen(null, priority));
-    if (result) setScanError('');
-  }, [onScan, priority]);
-
-  const handleClear = useCallback(() => {
-    onClear();
-    setScanError('');
-  }, [onClear]);
 
   return (
     <Paper
+      ref={containerRef}
       sx={{
-        p: 1,
+        p: 1.5,
         mb: 1,
-        borderLeft: isSTAT ? '6px solid #C41C1C' : '6px solid #1976D2',
+        borderLeft: hasSTAT ? '6px solid #C41C1C' : '6px solid #1976D2',
         transition: 'border-color 0.3s ease',
+        position: 'relative',
+        overflow: 'hidden',
+        ...(scanFeedback === 'success' && {
+          animation: `${flashGreen} 0.6s ease-out`,
+        }),
+        ...(scanFeedback === 'error' && {
+          animation: `${flashRed} 0.6s ease-out`,
+        }),
       }}
     >
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 1 }}>
+      {/* Header */}
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 1,
+          mb: 1,
+        }}
+      >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <QrCodeScanner sx={{ color: '#1976D2' }} />
-          <Typography variant="subtitle1" fontWeight={800} sx={{ color: 'text.primary' }}>
-            THÔNG TIN MẪU BỆNH PHẨM
+          <Typography
+            variant="subtitle1"
+            fontWeight={800}
+            sx={{ color: 'text.primary' }}
+          >
+            QUÉT MẪU BỆNH PHẨM
           </Typography>
+          {scanList.length > 0 && (
+            <Chip
+              label={`${scanList.length} mẫu`}
+              size="small"
+              sx={{
+                fontWeight: 700,
+                bgcolor: alpha('#1976D2', 0.12),
+                color: '#1976D2',
+                border: `1px solid ${alpha('#1976D2', 0.2)}`,
+              }}
+            />
+          )}
         </Box>
-        <PrioritySelector value={priority} onChange={setPriority} />
       </Box>
 
+      {/* Manual input row */}
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 1 }}>
         <TextField
           fullWidth
-          label="Quét barcode (nhấn Enter)"
-          value={scannerInput}
-          onChange={(e) => setScannerInput(e.target.value)}
-          onKeyDown={handleScannerKeyDown}
-          placeholder="VD: SP-238901"
+          label="Nhập mã vạch (hoặc quét bằng máy)"
+          value={manualInput}
+          onChange={(e) => setManualInput(e.target.value)}
+          onKeyDown={handleManualKeyDown}
+          placeholder="Quét tự động hoặc nhập tay..."
           InputProps={{ sx: { minHeight: 40, fontSize: '0.95rem' } }}
           InputLabelProps={{ sx: { fontSize: '1rem' } }}
+          autoComplete="off"
         />
         <Button
           variant="contained"
-          onClick={() => handleScan(scannerInput)}
-          sx={{ minWidth: 140, minHeight: 40, fontWeight: 700, fontSize: '0.9rem' }}
+          onClick={handleManualScan}
+          sx={{
+            minWidth: 140,
+            minHeight: 40,
+            fontWeight: 700,
+            fontSize: '0.9rem',
+          }}
           startIcon={<QrCodeScanner />}
         >
-          Quét
+          Tra cứu
         </Button>
-        <Button
-          variant="outlined"
-          onClick={handleSimulateScan}
-          sx={{ minWidth: 160, minHeight: 40, fontWeight: 700, fontSize: '0.9rem' }}
-        >
-          Simulate Scan
-        </Button>
+        {scanList.length > 0 && (
+          <Button
+            variant="outlined"
+            color="error"
+            onClick={onClearList}
+            sx={{ minWidth: 120, minHeight: 40, fontWeight: 700, fontSize: '0.9rem' }}
+          >
+            Xóa tất cả
+          </Button>
+        )}
       </Stack>
 
-      {scanError && (
-        <Fade in>
-          <Alert severity="error" sx={{ mb: 1 }}>
-            {scanError}
+      {/* Scan feedback message */}
+      {scanFeedback === 'success' && (
+        <Fade in timeout={200}>
+          <Alert
+            severity="success"
+            icon={<CheckCircle />}
+            sx={{
+              mb: 1,
+              fontWeight: 600,
+              animation: `${slideIn} 0.3s ease-out`,
+            }}
+          >
+            Đã thêm mẫu vào danh sách!
+          </Alert>
+        </Fade>
+      )}
+      {scanFeedback === 'error' && (
+        <Fade in timeout={200}>
+          <Alert
+            severity="error"
+            icon={<ErrorOutlineOutlined />}
+            sx={{
+              mb: 1,
+              fontWeight: 600,
+              animation: `${slideIn} 0.3s ease-out`,
+            }}
+          >
+            Không tìm thấy mẫu trong hệ thống!
+          </Alert>
+        </Fade>
+      )}
+      {scanFeedback === 'duplicate' && (
+        <Fade in timeout={200}>
+          <Alert
+            severity="warning"
+            sx={{
+              mb: 1,
+              fontWeight: 600,
+              animation: `${slideIn} 0.3s ease-out`,
+            }}
+          >
+            Mẫu này đã có trong danh sách!
           </Alert>
         </Fade>
       )}
 
-      {currentSpecimen ? (
-        <Fade in>
-          <Box
+      {/* Scan list table */}
+      {scanList.length > 0 ? (
+        <Fade in timeout={300}>
+          <TableContainer
             sx={{
-              p: 1.5,
+              maxHeight: 280,
               borderRadius: 2,
-              bgcolor: isSTAT ? alpha('#C41C1C', 0.07) : alpha('#65B5FF', 0.13),
-              border: `1px solid ${isSTAT ? alpha('#C41C1C', 0.24) : alpha('#65B5FF', 0.28)}`,
+              border: `1px solid ${alpha('#1976D2', 0.15)}`,
+              bgcolor: alpha('#65B5FF', 0.04),
             }}
           >
-            <Grid container spacing={1.5}>
-              <Grid item xs={12} sm={6} md={3}>
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                  Barcode
-                </Typography>
-                <Typography
-                  fontWeight={700}
-                  sx={{
-                    fontFamily: '"IBM Plex Mono", monospace',
-                    color: 'text.primary',
-                  }}
-                >
-                  {currentSpecimen.barcode}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={2.5}>
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                  Bệnh nhân
-                </Typography>
-                <Typography fontWeight={700} sx={{ color: 'text.primary' }}>
-                  {currentSpecimen.patientName}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={2}>
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                  Xét nghiệm
-                </Typography>
-                <Typography fontWeight={700} sx={{ color: 'text.primary' }}>
-                  {currentSpecimen.testType}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={2.5}>
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                  Thời gian quét
-                </Typography>
-                <Typography fontWeight={700} sx={{ color: 'text.primary' }}>
-                  {currentSpecimen.scanTime}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} sm={6} md={2}>
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                  Ưu tiên
-                </Typography>
-                <Chip
-                  icon={isSTAT ? <PriorityHigh sx={{ fontSize: '14px !important' }} /> : undefined}
-                  label={isSTAT ? 'STAT' : 'Routine'}
-                size="medium"
-                  sx={{
-                    mt: 0.3,
-                    fontWeight: 800,
-                    bgcolor: isSTAT ? '#C41C1C' : '#0BDF50',
-                    color: '#111',
-                  }}
-                />
-              </Grid>
-              <Grid item xs={12}>
-                <Button size="small" color="inherit" onClick={handleClear} sx={{ color: 'text.secondary' }}>
-                  Xóa mẫu hiện tại
-                </Button>
-              </Grid>
-            </Grid>
-          </Box>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>#</TableCell>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Barcode</TableCell>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Bệnh nhân</TableCell>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Xét nghiệm</TableCell>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Ưu tiên</TableCell>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }} align="center">Xóa</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {scanList.map((specimen, index) => {
+                  const isSTAT = specimen.priority === PRIORITY.STAT;
+                  return (
+                    <TableRow
+                      key={specimen.barcode}
+                      hover
+                      sx={{
+                        animation: `${slideIn} 0.3s ease-out`,
+                        bgcolor: isSTAT ? alpha('#C41C1C', 0.06) : 'transparent',
+                        '&:hover': {
+                          bgcolor: isSTAT
+                            ? alpha('#C41C1C', 0.1)
+                            : alpha('#1976D2', 0.06),
+                        },
+                      }}
+                    >
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.secondary' }}>
+                          {index + 1}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography
+                          fontWeight={700}
+                          sx={{
+                            fontFamily: '"IBM Plex Mono", monospace',
+                            color: 'text.primary',
+                            fontSize: '0.9rem',
+                          }}
+                        >
+                          {specimen.barcode}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography fontWeight={600} sx={{ color: 'text.primary' }}>
+                          {specimen.patientName}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography sx={{ color: 'text.secondary' }}>
+                          {specimen.testType}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          icon={
+                            isSTAT ? (
+                              <PriorityHigh sx={{ fontSize: '14px !important' }} />
+                            ) : undefined
+                          }
+                          label={isSTAT ? 'STAT' : 'Routine'}
+                          size="small"
+                          sx={{
+                            fontWeight: 800,
+                            bgcolor: isSTAT ? '#C41C1C' : '#0BDF50',
+                            color: '#111',
+                            fontSize: '0.72rem',
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell align="center">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => onRemoveFromList(specimen.barcode)}
+                          sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
+                        >
+                          <Delete fontSize="small" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
         </Fade>
       ) : (
         <Alert severity="info" sx={{ fontWeight: 600 }}>
-          Chưa có thông tin mẫu. Dispatch Cabin sẽ bị vô hiệu hóa đến khi quét xong.
+          Chưa có mẫu nào. Quét mã vạch hoặc nhập tay để thêm mẫu vào khay vận chuyển.
         </Alert>
       )}
     </Paper>

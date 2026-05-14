@@ -90,6 +90,7 @@ export default function createDataRoutes(prisma) {
             patientName: true,
             testType: true,
             priority: true,
+            status: true,
             scanTime: true,
             scannedById: true,
             scannedBy: { select: { username: true } },
@@ -142,6 +143,7 @@ export default function createDataRoutes(prisma) {
           patientName: item.patientName,
           testType: item.testType,
           priority: toApiPriority(item.priority),
+          status: String(item.status || 'PENDING').toLowerCase(),
           scanTime: item.scanTime,
           scannedById: item.scannedById,
           scannedByUsername: item.scannedBy?.username || null,
@@ -247,6 +249,7 @@ export default function createDataRoutes(prisma) {
           patientName: normalizedPatientName,
           testType: normalizedTestType,
           priority: toDbPriority(priority),
+          status: 'SCANNED',
           scanTime: toIsoOrNow(scanTime),
           scannedById: scannedBy.id,
         },
@@ -254,6 +257,7 @@ export default function createDataRoutes(prisma) {
           patientName: normalizedPatientName,
           testType: normalizedTestType,
           priority: toDbPriority(priority),
+          status: 'SCANNED',
           scanTime: toIsoOrNow(scanTime),
           scannedById: scannedBy.id,
         },
@@ -405,6 +409,122 @@ export default function createDataRoutes(prisma) {
     } catch (error) {
       console.error('COMPLETE_TRANSPORT_ERROR', error);
       return res.status(500).json({ message: 'Internal server error.' });
+    }
+  });
+
+  // ── POST /api/transports/batch-complete ─────────────────────────────────
+  router.post('/transports/batch-complete', requireAuth, async (req, res) => {
+    try {
+      const {
+        cabinId,
+        status = 'arrived',
+        barcodes,
+        dispatchTime,
+        arrivalTime,
+        fromStationId,
+        toStationId,
+      } = req.body ?? {};
+
+      const normalizedCabinId = String(cabinId || '').trim();
+      const normalizedFromStationId = String(fromStationId || '').trim();
+      const normalizedToStationId = String(toStationId || '').trim();
+      const requesterId = getRequesterId(req);
+
+      if (!Array.isArray(barcodes) || barcodes.length === 0) {
+        return res.status(400).json({ message: 'barcodes[] là bắt buộc.' });
+      }
+
+      if (!normalizedCabinId || !normalizedFromStationId || !normalizedToStationId) {
+        return res.status(400).json({ message: 'cabinId, fromStationId, toStationId là bắt buộc.' });
+      }
+
+      if (!requesterId) {
+        return res.status(401).json({ message: 'Invalid access token.' });
+      }
+
+      const [fromStation, toStation] = await Promise.all([
+        prisma.station.findUnique({ where: { id: normalizedFromStationId } }),
+        prisma.station.findUnique({ where: { id: normalizedToStationId } }),
+      ]);
+
+      if (!fromStation || !toStation) {
+        return res.status(404).json({ message: 'from/to station not found.' });
+      }
+
+      const parsedDispatchTime = toIsoOrNull(dispatchTime);
+      const parsedArrivalTime = arrivalTime == null ? null : toIsoOrNull(arrivalTime);
+      const normalizedStatus = toDbTransportStatus(status);
+
+      if (!parsedDispatchTime) {
+        return res.status(400).json({ message: 'dispatchTime là bắt buộc.' });
+      }
+
+      const resolvedArrivalTime = normalizedStatus === 'ARRIVED'
+        ? (parsedArrivalTime || new Date())
+        : parsedArrivalTime;
+
+      const normalizedBarcodes = barcodes.map((b) => String(b || '').trim().toUpperCase()).filter(Boolean);
+      const specimenStatus = normalizedStatus === 'ARRIVED' ? 'COMPLETED' : 'IN_TRANSIT';
+
+      const records = await prisma.$transaction(async (tx) => {
+        // Find all specimens by barcode
+        const specimens = await tx.specimen.findMany({
+          where: { barcode: { in: normalizedBarcodes } },
+          select: { id: true, barcode: true },
+        });
+
+        if (specimens.length === 0) {
+          throw new Error('Không tìm thấy mẫu nào phù hợp.');
+        }
+
+        // Update specimen statuses
+        await tx.specimen.updateMany({
+          where: { id: { in: specimens.map((s) => s.id) } },
+          data: { status: specimenStatus },
+        });
+
+        // Create transport records for each specimen
+        const transportRecords = [];
+        for (const spec of specimens) {
+          const record = await tx.transportRecord.create({
+            data: {
+              cabinId: normalizedCabinId,
+              status: normalizedStatus,
+              dispatchTime: parsedDispatchTime,
+              arrivalTime: resolvedArrivalTime,
+              specimenId: spec.id,
+              fromStationId: fromStation.id,
+              toStationId: toStation.id,
+            },
+            select: {
+              id: true,
+              cabinId: true,
+              status: true,
+              dispatchTime: true,
+              arrivalTime: true,
+              specimenId: true,
+              fromStationId: true,
+              toStationId: true,
+            },
+          });
+          transportRecords.push(record);
+        }
+
+        return transportRecords;
+      });
+
+      broadcastSyncRequired('batch-transport-completed');
+
+      return res.status(201).json({
+        message: `Đã tạo ${records.length} bản ghi vận chuyển.`,
+        records: records.map((r) => ({
+          ...r,
+          status: String(r.status || '').toLowerCase(),
+        })),
+      });
+    } catch (error) {
+      console.error('BATCH_COMPLETE_TRANSPORT_ERROR', error);
+      return res.status(500).json({ message: error.message || 'Internal server error.' });
     }
   });
 

@@ -41,9 +41,10 @@ import {
   CheckCircleOutlineOutlined as CheckCircleOutline,
   ErrorOutlineOutlined as ErrorOutline,
 } from '@mui/icons-material';
-import { io } from 'socket.io-client';
+
 import TabPanel from './TabPanel';
 import TransportHistoryDialog from './TransportHistoryDialog';
+import ExcelImportPanel from './ExcelImportPanel';
 import { USER_ROLES, STATIONS } from '../constants';
 
 // FIX: Align with useOpcUaSocket.js — empty string routes to current origin via Vite proxy
@@ -172,10 +173,10 @@ const SystemLogsTable = memo(function SystemLogsTable({ logs }) {
                             ? '#36D399'
                             : '#4DA3FF',
                       border: `1px solid ${log.type === 'error'
-                          ? alpha('#FF4D6A', 0.15)
-                          : log.type === 'success'
-                            ? alpha('#36D399', 0.15)
-                            : alpha('#0A7AFF', 0.15)
+                        ? alpha('#FF4D6A', 0.15)
+                        : log.type === 'success'
+                          ? alpha('#36D399', 0.15)
+                          : alpha('#0A7AFF', 0.15)
                         }`,
                     }}
                   />
@@ -832,6 +833,7 @@ const AdminPage = memo(function AdminPage({ scada }) {
           <Tab label="2. Quản Lý Tài Khoản" />
           <Tab label="3. Cấp Tài Khoản" />
           <Tab label="4. Dữ Liệu Đã Lưu" />
+          <Tab label="5. Import Excel" />
         </Tabs>
 
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: { xs: 1, sm: 0 }, pl: { xs: 2, sm: 0 } }}>
@@ -914,6 +916,10 @@ const AdminPage = memo(function AdminPage({ scada }) {
 
         <TabPanel value={tabIndex} index={3}>
           <PersistedDataPanel scada={scada} />
+        </TabPanel>
+
+        <TabPanel value={tabIndex} index={4}>
+          <ExcelImportPanel />
         </TabPanel>
       </Box>
 
@@ -1011,8 +1017,7 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
 
     // Listen for enrollment result on the MAIN socket
     const handleSuccess = (data) => {
-      // eslint-disable-next-line eqeqeq
-      if (data.userId != user.id) return;
+      if (String(data.userId) !== String(user.id)) return;
       if (doneRef.current) return;
       doneRef.current = true;
 
@@ -1040,8 +1045,7 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
     };
 
     const handleStepDone = (data) => {
-      // eslint-disable-next-line eqeqeq
-      if (data.userId != user.id) return;
+      if (String(data.userId) !== String(user.id)) return;
       if (doneRef.current) return;
       setEnrollStep(data.step + 1);
     };

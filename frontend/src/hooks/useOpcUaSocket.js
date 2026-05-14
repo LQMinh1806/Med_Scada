@@ -267,6 +267,14 @@ export default function useOpcUaSocket() {
     socket.emit('scada:stateSync', snapshot);
   }, []);
 
+  const setOnStateSync = useCallback((cb) => {
+    onStateSyncRef.current = cb;
+  }, []);
+
+  const setOnDataSync = useCallback((cb) => {
+    onDataSyncRef.current = cb;
+  }, []);
+
   /**
    * Broadcast data mutation notification to all other connected devices.
    *
@@ -311,9 +319,11 @@ export default function useOpcUaSocket() {
       emitDataSync,
       onStateSyncRef,
       onDataSyncRef,
+      setOnStateSync,
+      setOnDataSync,
       reconnectSocket,
       getSocket,
     }),
-    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, reconnectSocket, getSocket],
+    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket],
   );
 }

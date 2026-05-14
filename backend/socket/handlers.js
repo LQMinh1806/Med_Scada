@@ -6,6 +6,7 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 import jwt from 'jsonwebtoken';
+import dgram from 'dgram';
 import {
   JWT_SECRET,
   AUTH_COOKIE_NAME,
@@ -18,6 +19,28 @@ import {
   clearFingerprintLoginSession,
   pendingEnrollments,
 } from '../services/fingerprint-session.js';
+
+// ── UDP Push Trigger ───────────────────────────────────────────────────────────
+// Gửi UDP broadcast đến ESP8266 khi frontend bắt đầu phiên đăng nhập bằng vân tay.
+// ESP8266 nhận packet và poll server ngay lập tức (< 5ms trên LAN).
+const UDP_TRIGGER_PORT = 3031;
+const UDP_TRIGGER_MSG  = 'MEDSCADA_LOGIN_TRIGGER';
+
+function sendUdpLoginTrigger() {
+  const client = dgram.createSocket('udp4');
+  const msg = Buffer.from(UDP_TRIGGER_MSG);
+  client.bind(() => {
+    client.setBroadcast(true);
+    client.send(msg, 0, msg.length, UDP_TRIGGER_PORT, '255.255.255.255', (err) => {
+      if (err) {
+        console.warn('[UDP] Failed to send login trigger:', err.message);
+      } else {
+        console.log('[UDP] ⚡ Login trigger broadcast sent to port', UDP_TRIGGER_PORT);
+      }
+      client.close();
+    });
+  });
+}
 
 /**
  * Register Socket.io authentication middleware and connection handlers.
@@ -183,6 +206,9 @@ export function registerSocketHandlers(io) {
       setFingerprintLoginSession(socket.id);
       socket.join('fingerprint-login-waiters');
       console.log(`[Socket.io] ${socket.id} joined fingerprint-login-waiters`);
+
+      // Push UDP trigger — ESP8266 sẽ poll ngay lập tức, không cần chờ vòng poll tiếp theo
+      sendUdpLoginTrigger();
     });
 
     socket.on('FINGERPRINT_LOGIN_CANCEL', () => {
