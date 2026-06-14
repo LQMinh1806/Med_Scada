@@ -20,7 +20,8 @@ import {
 } from '@mui/icons-material';
 import ScadaSVGMap from './ScadaSVGMap';
 import TransportHistoryDialog from './TransportHistoryDialog';
-import { PRIORITY, ROBOT_STATUS } from '../constants';
+import CabinSensorPanel from './CabinSensorPanel';
+import { ROBOT_STATUS } from '../constants';
 
 const KpiCard = memo(function KpiCard({ icon, label, value, unit, color, trend }) {
   return (
@@ -114,7 +115,7 @@ const KpiCard = memo(function KpiCard({ icon, label, value, unit, color, trend }
 const StationStatusChip = memo(function StationStatusChip({ station, queueInfo }) {
   const ready = station.ready;
   const isQueued = Boolean(queueInfo);
-  const isQueueStat = queueInfo?.priority === PRIORITY.STAT;
+  const isQueuePriority = queueInfo?.priority === 'station-priority';
 
   return (
     <Paper
@@ -143,14 +144,14 @@ const StationStatusChip = memo(function StationStatusChip({ station, queueInfo }
       </Box>
       {isQueued && (
         <Chip
-          label={`#${queueInfo.position} ${isQueueStat ? 'STAT' : 'Đợi'}`}
-          color={isQueueStat ? 'error' : 'warning'}
+          label={`#${queueInfo.position} ${isQueuePriority ? 'Ưu tiên' : 'Đợi'}`}
+          color="warning"
           size="small"
           sx={{
             height: 22,
             fontWeight: 700,
             fontSize: '0.62rem',
-            animation: isQueueStat ? 'pulse-queue 1.2s ease-in-out infinite' : 'none',
+            animation: isQueuePriority ? 'pulse-queue 1.2s ease-in-out infinite' : 'none',
             '@keyframes pulse-queue': {
               '0%, 100%': { opacity: 1 },
               '50%': { opacity: 0.7 },
@@ -206,7 +207,7 @@ const ThroughputSparkline = memo(function ThroughputSparkline({ points }) {
 });
 
 const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
-  const { robotState, stations, transportedSpecimens, queue } = scada;
+  const { robotState, stations, transportedSpecimens, queue, cabinSensorData, sensorHistory } = scada;
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   const handleOpenHistory = useCallback(() => setIsHistoryOpen(true), []);
@@ -221,8 +222,7 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
   const kpis = useMemo(() => {
     const records = transportedSpecimens || [];
     const total = records.length;
-    const statCount = records.filter((record) => record.priority === PRIORITY.STAT).length;
-    const statRatio = total > 0 ? ((statCount / total) * 100).toFixed(1) : '0';
+    const destinationCount = new Set(records.map((record) => record.toStationId).filter(Boolean)).size;
 
     let avgDeliveryMin = 0;
     let validTimings = 0;
@@ -237,50 +237,8 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
     }
     avgDeliveryMin = validTimings > 0 ? (avgDeliveryMin / validTimings).toFixed(1) : '—';
 
-    return { total, statCount, statRatio, avgDeliveryMin };
+    return { total, destinationCount, avgDeliveryMin };
   }, [transportedSpecimens]);
-
-  const operationalInsights = useMemo(() => {
-    const records = transportedSpecimens || [];
-    const recent = records.slice(0, 80);
-    let withinSla = 0;
-    let measured = 0;
-
-    for (const item of recent) {
-      if (!item.dispatchTime || !item.arrivalTime) continue;
-      const dispatch = new Date(item.dispatchTime).getTime();
-      const arrival = new Date(item.arrivalTime).getTime();
-      if (Number.isNaN(dispatch) || Number.isNaN(arrival) || arrival <= dispatch) continue;
-      measured += 1;
-      if ((arrival - dispatch) / 60000 <= 8) {
-        withinSla += 1;
-      }
-    }
-
-    const slaRate = measured > 0 ? Number(((withinSla / measured) * 100).toFixed(1)) : 0;
-
-    const timestamps = records
-      .map((item) => new Date(item.arrivalTime || item.dispatchTime || '').getTime())
-      .filter((value) => !Number.isNaN(value));
-
-    const throughputPoints = Array(12).fill(0);
-    if (timestamps.length > 0) {
-      const latestTimestamp = Math.max(...timestamps);
-      const oneHourMs = 60 * 60 * 1000;
-      for (const timestamp of timestamps) {
-        const diffHours = Math.floor((latestTimestamp - timestamp) / oneHourMs);
-        if (diffHours >= 0 && diffHours < 12) {
-          throughputPoints[11 - diffHours] += 1;
-        }
-      }
-    }
-
-    const readinessRate = stations.length > 0
-      ? Number(((stations.filter((station) => station.ready).length / stations.length) * 100).toFixed(1))
-      : 0;
-
-    return { slaRate, measured, throughputPoints, readinessRate };
-  }, [stations, transportedSpecimens]);
 
   const queueByStationId = useMemo(() => {
     if (!Array.isArray(queue) || queue.length === 0) return {};
@@ -298,7 +256,7 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
 
   return (
     <Fade in timeout={400}>
-      <Box sx={{ display: 'grid', gap: 0.72 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.72 }}>
         <Grid container spacing={0.75}>
           <Grid item xs={6} sm={3}>
             <KpiCard icon={<LocalShipping />} label="Tổng vận chuyển" value={kpis.total} unit="lượt" color="#65B5FF" />
@@ -307,77 +265,15 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
             <KpiCard icon={<Speed />} label="Thời gian TB" value={kpis.avgDeliveryMin} unit="phút" color="#1976D2" />
           </Grid>
           <Grid item xs={6} sm={3}>
-            <KpiCard icon={<TrendingUp />} label="Mẫu STAT" value={kpis.statCount} unit={`(${kpis.statRatio}%)`} color="#C41C1C" />
+            <KpiCard icon={<TrendingUp />} label="Trạm nhận" value={kpis.destinationCount} unit="trạm" color="#FF9800" />
           </Grid>
           <Grid item xs={6} sm={3}>
             <KpiCard icon={<Schedule />} label="Uptime" value={robotState.isOnline ? '100' : '0'} unit="%" color="#0BDF50" />
           </Grid>
         </Grid>
 
-        <Grid container spacing={0.8} alignItems="stretch">
-          <Grid item xs={12} lg={8} sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-            <Paper
-              sx={{
-                p: { xs: 1.05, md: 1.25 },
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 0.85,
-                borderTop: '3px solid #1976D2',
-                overflow: 'hidden',
-              }}
-            >
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8 }}>
-                  <MapIcon sx={{ color: '#1976D2', fontSize: 18 }} />
-                  <Typography variant="subtitle2" fontWeight={800} sx={{ color: 'text.primary' }}>
-                    BẢN ĐỒ GIÁM SÁT CABIN VẬN CHUYỂN
-                  </Typography>
-                </Box>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<History />}
-                  onClick={handleOpenHistory}
-                  sx={{ fontWeight: 700, py: 0.5, minHeight: 32 }}
-                >
-                  Lịch sử
-                </Button>
-              </Box>
-
-              <Box
-                sx={{
-                  bgcolor: alpha('#65B5FF', 0.08),
-                  borderRadius: 2,
-                  overflow: 'hidden',
-                  border: `1px solid ${alpha('#111111', 0.1)}`,
-                }}
-              >
-                <ScadaSVGMap scada={scada} />
-              </Box>
-            </Paper>
-
-            <Paper sx={{ p: 1.05, borderTop: '3px solid #65B5FF' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 0.75, flexWrap: 'wrap' }}>
-                <Typography variant="subtitle2" fontWeight={800} sx={{ color: 'text.primary' }}>
-                  TRẠNG THÁI TRẠM
-                </Typography>
-                <Typography sx={{ fontSize: '0.67rem', color: 'text.secondary', fontWeight: 600 }}>
-                  {stations.length} trạm
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 0.9 }}>
-                {stations.map((station) => {
-                  const queueInfo = queueByStationId[station.id] || null;
-                  return (
-                    <StationStatusChip key={station.id} station={station} queueInfo={queueInfo} />
-                  );
-                })}
-              </Box>
-            </Paper>
-          </Grid>
-
-          <Grid item xs={12} lg={4} sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: 'stretch' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, justifyContent: 'space-between', flex: { sm: '1 1 0%' }, width: { xs: '100%', sm: '33.33%' } }}>
             <Paper
               sx={{
                 p: 1.15,
@@ -442,47 +338,75 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
               </Box>
             </Paper>
 
-            <Paper sx={{ p: 1.15, borderTop: '3px solid #65B5FF' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8, mb: 0.75 }}>
-                <Insights sx={{ color: '#65B5FF', fontSize: 18 }} />
+            {/* ── ESP32 Cabin Sensor Panel ─────────────────────────────── */}
+            <CabinSensorPanel
+              sensorData={cabinSensorData}
+              sensorHistory={sensorHistory}
+            />
+          </Box>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, flex: { sm: '2 1 0%' }, width: { xs: '100%', sm: '66.66%' } }}>
+            <Paper
+              sx={{
+                p: { xs: 1.05, md: 1.25 },
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 0.85,
+                borderTop: '3px solid #1976D2',
+                overflow: 'hidden',
+              }}
+            >
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8 }}>
+                  <MapIcon sx={{ color: '#1976D2', fontSize: 18 }} />
+                  <Typography variant="subtitle2" fontWeight={800} sx={{ color: 'text.primary' }}>
+                    BẢN ĐỒ GIÁM SÁT CABIN VẬN CHUYỂN
+                  </Typography>
+                </Box>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<History />}
+                  onClick={handleOpenHistory}
+                  sx={{ fontWeight: 700, py: 0.5, minHeight: 32 }}
+                >
+                  Lịch sử
+                </Button>
+              </Box>
+
+              <Box
+                sx={{
+                  bgcolor: alpha('#65B5FF', 0.08),
+                  borderRadius: 2,
+                  overflow: 'hidden',
+                  border: `1px solid ${alpha('#111111', 0.1)}`,
+                }}
+              >
+                <ScadaSVGMap scada={scada} encoderData={cabinSensorData} />
+              </Box>
+            </Paper>
+
+            <Paper sx={{ p: 1.05, borderTop: '3px solid #65B5FF' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 0.75, flexWrap: 'wrap' }}>
                 <Typography variant="subtitle2" fontWeight={800} sx={{ color: 'text.primary' }}>
-                  OPERATIONAL ANALYTICS
+                  TRẠNG THÁI TRẠM
+                </Typography>
+                <Typography sx={{ fontSize: '0.67rem', color: 'text.secondary', fontWeight: 600 }}>
+                  {stations.length} trạm
                 </Typography>
               </Box>
 
-              <Grid container spacing={0.8}>
-                <Grid item xs={6}>
-                  <Box sx={{ p: 0.95, borderRadius: 2, bgcolor: alpha('#0BDF50', 0.12) }}>
-                    <Typography sx={{ fontSize: '0.66rem', color: 'text.secondary', fontWeight: 600 }}>
-                      SLA &lt; 8 phút
-                    </Typography>
-                    <Typography sx={{ fontWeight: 800, fontSize: '1.12rem', color: '#05903A' }}>
-                      {operationalInsights.slaRate}%
-                    </Typography>
-                  </Box>
-                </Grid>
-                <Grid item xs={6}>
-                  <Box sx={{ p: 0.95, borderRadius: 2, bgcolor: alpha('#65B5FF', 0.18) }}>
-                    <Typography sx={{ fontSize: '0.66rem', color: 'text.secondary', fontWeight: 600 }}>
-                      Trạm sẵn sàng
-                    </Typography>
-                    <Typography sx={{ fontWeight: 800, fontSize: '1.12rem', color: '#1468B8' }}>
-                      {operationalInsights.readinessRate}%
-                    </Typography>
-                  </Box>
-                </Grid>
-              </Grid>
-
-              <Typography sx={{ mt: 0.85, fontSize: '0.68rem', color: 'text.secondary', fontWeight: 600 }}>
-                Throughput 12 giờ gần nhất
-              </Typography>
-              <ThroughputSparkline points={operationalInsights.throughputPoints} />
-              <Typography sx={{ mt: 0.55, fontSize: '0.66rem', color: 'text.secondary' }}>
-                Mẫu có dữ liệu SLA: {operationalInsights.measured}
-              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, gap: 0.9 }}>
+                {stations.map((station) => {
+                  const queueInfo = queueByStationId[station.id] || null;
+                  return (
+                    <StationStatusChip key={station.id} station={station} queueInfo={queueInfo} />
+                  );
+                })}
+              </Box>
             </Paper>
-          </Grid>
-        </Grid>
+          </Box>
+        </Box>
 
         <TransportHistoryDialog
           open={isHistoryOpen}

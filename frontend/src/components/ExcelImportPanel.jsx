@@ -26,8 +26,56 @@ import {
 } from '@mui/icons-material';
 import * as XLSX from 'xlsx';
 import { attachCsrfHeader } from '../utils/csrf';
+import { STATIONS } from '../constants';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+const DESTINATION_COLUMN_KEYS = [
+  'DestinationStationId',
+  'destinationStationId',
+  'DestinationStation',
+  'destinationStation',
+  'ToStationId',
+  'toStationId',
+  'ToStation',
+  'toStation',
+  'Destination',
+  'destination',
+  'Trạm đích',
+  'Tram dich',
+  'Trạm đến',
+  'Tram den',
+  'Nơi nhận',
+  'Noi nhan',
+];
+
+function normalizeLookupText(value) {
+  return String(value || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toUpperCase();
+}
+
+function readFirstValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] != null && String(row[key]).trim() !== '') return row[key];
+  }
+  return '';
+}
+
+function resolveDestinationStation(rawValue) {
+  const normalized = normalizeLookupText(rawValue);
+  if (!normalized) return null;
+  return STATIONS.find((station) => (
+    normalizeLookupText(station.id) === normalized ||
+    normalizeLookupText(station.name) === normalized ||
+    normalizeLookupText(String(station.idx + 1)) === normalized ||
+    normalizeLookupText(String(station.idx)) === normalized
+  )) || null;
+}
 
 const fadeUp = keyframes`
   from { opacity: 0; transform: translateY(10px); }
@@ -87,9 +135,8 @@ const ExcelImportPanel = memo(function ExcelImportPanel() {
             row.Test || row.Type || ''
           ).trim();
 
-          const priority = String(
-            row.Priority || row.priority || row['Ưu tiên'] || row['Uu tien'] || 'routine'
-          ).trim().toLowerCase();
+          const destinationRaw = readFirstValue(row, DESTINATION_COLUMN_KEYS);
+          const destinationStation = resolveDestinationStation(destinationRaw);
 
           if (!barcode) {
             errors.push({ row: i + 2, reason: 'Thiếu mã vạch (Barcode)' });
@@ -103,8 +150,18 @@ const ExcelImportPanel = memo(function ExcelImportPanel() {
             errors.push({ row: i + 2, reason: `${barcode}: Thiếu loại xét nghiệm` });
             continue;
           }
+          if (!destinationStation) {
+            errors.push({ row: i + 2, reason: `${barcode}: Thiếu hoặc sai trạm đích` });
+            continue;
+          }
 
-          parsed.push({ barcode, patientName, testType, priority });
+          parsed.push({
+            barcode,
+            patientName,
+            testType,
+            destinationStationId: destinationStation.id,
+            destinationStationName: destinationStation.name,
+          });
         }
 
         setPreviewData(parsed);
@@ -192,10 +249,10 @@ const ExcelImportPanel = memo(function ExcelImportPanel() {
       {/* Instructions */}
       <Alert severity="info" sx={{ mb: 2 }}>
         <Typography variant="body2" fontWeight={600}>
-          File Excel cần có các cột: <code>Barcode</code>, <code>PatientName</code>, <code>TestType</code>, <code>Priority</code> (stat/routine).
+          File Excel cần có các cột: <code>Barcode</code>, <code>PatientName</code>, <code>TestType</code>, <code>DestinationStation</code>.
         </Typography>
         <Typography variant="body2" sx={{ mt: 0.5 }}>
-          Hỗ trợ tên cột tiếng Việt: Mã vạch, Tên bệnh nhân, Loại xét nghiệm, Ưu tiên.
+          Hỗ trợ tên cột tiếng Việt: Mã vạch, Tên bệnh nhân, Loại xét nghiệm, Trạm đích. Trạm đích có thể ghi ST-02 hoặc tên trạm.
         </Typography>
       </Alert>
 
@@ -331,7 +388,7 @@ const ExcelImportPanel = memo(function ExcelImportPanel() {
                     <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08) }}>Barcode</TableCell>
                     <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08) }}>Tên bệnh nhân</TableCell>
                     <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08) }}>Loại XN</TableCell>
-                    <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08) }}>Ưu tiên</TableCell>
+                    <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08) }}>Trạm đích</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -351,12 +408,12 @@ const ExcelImportPanel = memo(function ExcelImportPanel() {
                       <TableCell>{row.testType}</TableCell>
                       <TableCell>
                         <Chip
-                          label={row.priority === 'stat' ? 'STAT' : 'Routine'}
+                          label={`${row.destinationStationId} · ${row.destinationStationName}`}
                           size="small"
                           sx={{
                             fontWeight: 800,
                             fontSize: '0.7rem',
-                            bgcolor: row.priority === 'stat' ? '#C41C1C' : '#0BDF50',
+                            bgcolor: alpha('#1976D2', 0.14),
                             color: '#111',
                           }}
                         />

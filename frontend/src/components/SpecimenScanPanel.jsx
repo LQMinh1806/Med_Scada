@@ -4,8 +4,11 @@ import {
   Box,
   Button,
   Chip,
+  FormControl,
   IconButton,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -22,12 +25,10 @@ import {
 } from '@mui/material';
 import {
   QrCodeScanner,
-  PriorityHigh,
   Delete,
   CheckCircle,
   ErrorOutlineOutlined,
 } from '@mui/icons-material';
-import { PRIORITY } from '../constants';
 
 const flashGreen = keyframes`
   0% { background-color: transparent; }
@@ -58,14 +59,14 @@ const SpecimenScanPanel = memo(function SpecimenScanPanel({
   onLookupBarcode,
   onRemoveFromList,
   onClearList,
+  onUpdateDestination,
+  stations = [],
   scanFeedback,
 }) {
   const [manualInput, setManualInput] = useState('');
   const scanBufferRef = useRef('');
   const scanTimerRef = useRef(null);
   const containerRef = useRef(null);
-
-  const hasSTAT = scanList.some((s) => s.priority === PRIORITY.STAT);
 
   // ── Global keyboard listener for HID barcode scanner ──────────────────
   useEffect(() => {
@@ -131,13 +132,15 @@ const SpecimenScanPanel = memo(function SpecimenScanPanel({
     [handleManualScan]
   );
 
+  const missingDestinationCount = scanList.filter((specimen) => !specimen.destinationStationId).length;
+
   return (
     <Paper
       ref={containerRef}
       sx={{
         p: 1.5,
         mb: 1,
-        borderLeft: hasSTAT ? '6px solid #C41C1C' : '6px solid #1976D2',
+        borderLeft: '6px solid #1976D2',
         transition: 'border-color 0.3s ease',
         position: 'relative',
         overflow: 'hidden',
@@ -268,6 +271,12 @@ const SpecimenScanPanel = memo(function SpecimenScanPanel({
         </Fade>
       )}
 
+      {missingDestinationCount > 0 && (
+        <Alert severity="warning" sx={{ mb: 1, fontWeight: 600 }}>
+          {missingDestinationCount} mẫu chưa có trạm đích.
+        </Alert>
+      )}
+
       {/* Scan list table */}
       {scanList.length > 0 ? (
         <Fade in timeout={300}>
@@ -286,84 +295,86 @@ const SpecimenScanPanel = memo(function SpecimenScanPanel({
                   <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Barcode</TableCell>
                   <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Bệnh nhân</TableCell>
                   <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Xét nghiệm</TableCell>
-                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Ưu tiên</TableCell>
+                  <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }}>Trạm đích</TableCell>
                   <TableCell sx={{ fontWeight: 700, bgcolor: alpha('#1976D2', 0.08), color: 'text.primary' }} align="center">Xóa</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {scanList.map((specimen, index) => {
-                  const isSTAT = specimen.priority === PRIORITY.STAT;
-                  return (
-                    <TableRow
-                      key={specimen.barcode}
-                      hover
-                      sx={{
-                        animation: `${slideIn} 0.3s ease-out`,
-                        bgcolor: isSTAT ? alpha('#C41C1C', 0.06) : 'transparent',
-                        '&:hover': {
-                          bgcolor: isSTAT
-                            ? alpha('#C41C1C', 0.1)
-                            : alpha('#1976D2', 0.06),
-                        },
-                      }}
-                    >
-                      <TableCell>
-                        <Typography variant="body2" fontWeight={600} sx={{ color: 'text.secondary' }}>
-                          {index + 1}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography
-                          fontWeight={700}
+                {scanList.map((specimen, index) => (
+                  <TableRow
+                    key={specimen.barcode}
+                    hover
+                    sx={{
+                      animation: `${slideIn} 0.3s ease-out`,
+                      '&:hover': {
+                        bgcolor: alpha('#1976D2', 0.06),
+                      },
+                    }}
+                  >
+                    <TableCell>
+                      <Typography variant="body2" fontWeight={600} sx={{ color: 'text.secondary' }}>
+                        {index + 1}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography
+                        fontWeight={700}
+                        sx={{
+                          fontFamily: '"IBM Plex Mono", monospace',
+                          color: 'text.primary',
+                          fontSize: '0.9rem',
+                        }}
+                      >
+                        {specimen.barcode}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography fontWeight={600} sx={{ color: 'text.primary' }}>
+                        {specimen.patientName}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography sx={{ color: 'text.secondary' }}>
+                        {specimen.testType}
+                      </Typography>
+                    </TableCell>
+                    <TableCell sx={{ minWidth: 170 }}>
+                      <FormControl size="small" fullWidth>
+                        <Select
+                          value={specimen.destinationStationId || ''}
+                          displayEmpty
+                          onChange={(event) => onUpdateDestination?.(specimen.barcode, event.target.value)}
                           sx={{
-                            fontFamily: '"IBM Plex Mono", monospace',
-                            color: 'text.primary',
-                            fontSize: '0.9rem',
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            bgcolor: specimen.destinationStationId
+                              ? alpha('#0BDF50', 0.08)
+                              : alpha('#FF9800', 0.1),
                           }}
                         >
-                          {specimen.barcode}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography fontWeight={600} sx={{ color: 'text.primary' }}>
-                          {specimen.patientName}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography sx={{ color: 'text.secondary' }}>
-                          {specimen.testType}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Chip
-                          icon={
-                            isSTAT ? (
-                              <PriorityHigh sx={{ fontSize: '14px !important' }} />
-                            ) : undefined
-                          }
-                          label={isSTAT ? 'STAT' : 'Routine'}
-                          size="small"
-                          sx={{
-                            fontWeight: 800,
-                            bgcolor: isSTAT ? '#C41C1C' : '#0BDF50',
-                            color: '#111',
-                            fontSize: '0.72rem',
-                          }}
-                        />
-                      </TableCell>
-                      <TableCell align="center">
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => onRemoveFromList(specimen.barcode)}
-                          sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
-                        >
-                          <Delete fontSize="small" />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                          <MenuItem value="" disabled>
+                            Chọn trạm
+                          </MenuItem>
+                          {stations.map((station) => (
+                            <MenuItem key={station.id} value={station.id}>
+                              {station.name}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </TableCell>
+                    <TableCell align="center">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => onRemoveFromList(specimen.barcode)}
+                        sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
+                      >
+                        <Delete fontSize="small" />
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           </TableContainer>

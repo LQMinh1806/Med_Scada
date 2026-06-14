@@ -41,7 +41,7 @@
   LED_BUILTIN          // Đèn LED có sẵn trên NodeMCU (thường là D4/GPIO2)
 #define LED_SUCCESS D6 // Chân cho đèn LED báo thành công (tuỳ chọn)
 #define LED_ERROR D7   // Chân cho đèn LED báo lỗi (tuỳ chọn)
-#define BUZZER_PIN D5  // Chân cho còi chip (tuỳ chọn)
+#define BUZZER_PIN D0  // Chân cho còi chip (tuỳ chọn, nối vào D0)
 
 // ── Timing Configuration (ms) ──────────────────────────────────────────────
 #define POLL_INTERVAL_MATCH_MS 200   // Fallback poll khi ở match mode
@@ -78,6 +78,7 @@ enum SystemState {
 
 SystemState currentState = STATE_INIT;
 String currentMode = "match"; // "match" or "enroll"
+bool activeLoginSession = false; // Có phiên đăng nhập từ web đang chờ hay không
 int enrollUserId = -1;
 int enrollSlotId = -1;
 
@@ -106,14 +107,16 @@ bool discoverServer();
 void pollServerStatus();
 void handleMatchMode();
 void handleEnrollMode();
-bool sendMatchResult(int fingerprintId);
+int sendMatchResult(int fingerprintId);
 bool sendEnrollResult(int fingerprintId, int userId);
 bool sendEnrollStep(int step, int userId);
 int findNextFreeSlot();
 void blinkLed(int pin, int count, int delayMs);
 void setLedIndicator(int pin, bool state);
-void playTone(int frequency, int duration);
+void beep(int count, int durationMs);
 void feedbackSuccess();
+void feedbackEnrollStep1();
+void feedbackEnrollComplete();
 void feedbackError();
 void feedbackWaiting();
 
@@ -412,6 +415,21 @@ void pollServerStatus() {
           Serial.print(enrollUserId);
           Serial.print(", slotId=");
           Serial.println(enrollSlotId);
+        } else if (currentMode == "match") {
+          bool newSession = doc.containsKey("activeSession") ? doc["activeSession"].as<bool>() : false;
+          if (newSession != activeLoginSession) {
+            Serial.print("[Poll] Web login session is now: ");
+            Serial.println(newSession ? "ACTIVE" : "INACTIVE");
+            activeLoginSession = newSession;
+          }
+        }
+      } else if (currentMode == "match") {
+        // Cập nhật trạng thái session ngay cả khi mode không đổi
+        bool newSession = doc.containsKey("activeSession") ? doc["activeSession"].as<bool>() : false;
+        if (newSession != activeLoginSession) {
+          Serial.print("[Poll] Web login session is now: ");
+          Serial.println(newSession ? "ACTIVE" : "INACTIVE");
+          activeLoginSession = newSession;
         }
       }
     } else {
@@ -453,6 +471,11 @@ void pollServerStatus() {
 // Match Mode — Scan fingerprint and report match to server
 // ═══════════════════════════════════════════════════════════════════════════════
 void handleMatchMode() {
+  if (!activeLoginSession) {
+    // Không có yêu cầu đăng nhập từ web -> Không làm gì cả để tránh đọc cảm biến vô ích
+    return;
+  }
+
   // Don't scan too quickly after a successful match
   if (millis() - lastScanTime < SCAN_DEBOUNCE_MS && lastScanTime != 0) {
     return;
@@ -498,9 +521,14 @@ void handleMatchMode() {
   Serial.println(confidence);
 
   // Report to backend
-  if (sendMatchResult(fingerprintId)) {
+  int matchStatus = sendMatchResult(fingerprintId);
+  if (matchStatus == 1) {
     Serial.println("[Match] ✓ Login event sent to server.");
     feedbackSuccess();
+  } else if (matchStatus == 2) {
+    Serial.println("[Match] ✗ Ignored (No active web login request).");
+    // Phiên web đã hết hạn ngay lúc đang quét tay -> im lặng không báo lỗi
+    activeLoginSession = false;
   } else {
     Serial.println("[Match] ✗ Failed to notify server.");
     feedbackError();
@@ -543,7 +571,7 @@ void handleEnrollMode() {
     }
 
     Serial.println("[Enroll] ✓ Step 1 complete. Remove finger...");
-    blinkLed(LED_SUCCESS, 2, 200);
+    feedbackEnrollStep1();
 
     // Wait until finger is removed
     while (finger.getImage() == FINGERPRINT_OK) {
@@ -640,7 +668,7 @@ void handleEnrollMode() {
   case STATE_ENROLL_REPORTING: {
     if (sendEnrollResult(enrollSlotId, enrollUserId)) {
       Serial.println("[Enroll] ✓ Enrollment reported to server successfully!");
-      feedbackSuccess();
+      feedbackEnrollComplete();
     } else {
       Serial.println("[Enroll] ✗ Failed to report enrollment to server.");
       // Template is already stored locally — server can retry later
@@ -664,8 +692,8 @@ void handleEnrollMode() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // HTTP: POST /api/fingerprint/match
 // ═══════════════════════════════════════════════════════════════════════════════
-bool sendMatchResult(int fingerprintId) {
-  if (WiFiSettings.server_url.isEmpty()) return false;
+int sendMatchResult(int fingerprintId) {
+  if (WiFiSettings.server_url.isEmpty()) return 0;
 
   HTTPClient http;
   String url = WiFiSettings.server_url + "/api/fingerprint/match";
@@ -691,13 +719,16 @@ bool sendMatchResult(int fingerprintId) {
   Serial.print("[HTTP] POST /api/fingerprint/match → ");
   int httpCode = http.POST(body);
 
-  bool success = false;
+  int status = 0; // 0 = error, 1 = success, 2 = ignored
 
   if (httpCode == 200) {
     String response = http.getString();
     Serial.print("200 OK — ");
     Serial.println(response);
-    success = true;
+    status = 1;
+  } else if (httpCode == 409) {
+    Serial.println("409 — No active fingerprint login session.");
+    status = 2;
   } else if (httpCode == 404) {
     Serial.println("404 — No user mapped to this fingerprint ID.");
   } else if (httpCode == 403) {
@@ -712,7 +743,7 @@ bool sendMatchResult(int fingerprintId) {
   }
 
   http.end();
-  return success;
+  return status;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -843,32 +874,41 @@ void setLedIndicator(int pin, bool state) {
   }
 }
 
-void playTone(int frequency, int duration) {
-  // Simple tone generation using buzzer
-  if (BUZZER_PIN > 0) {
-    tone(BUZZER_PIN, frequency, duration);
-    delay(duration);
-    noTone(BUZZER_PIN);
+// Chân D0 (GPIO16) không hỗ trợ hàm tone() (phần cứng không có PWM timer tương thích).
+// Do đó, với còi báo ở D0, ta giả định là còi chủ động (Active Buzzer),
+// chỉ cần bật (HIGH) và tắt (LOW) để tạo tiếng bíp.
+void beep(int count, int durationMs) {
+  if (BUZZER_PIN >= 0) {
+    for (int i = 0; i < count; i++) {
+      digitalWrite(BUZZER_PIN, HIGH);
+      delay(durationMs);
+      digitalWrite(BUZZER_PIN, LOW);
+      if (i < count - 1) delay(100); // Khoảng nghỉ giữa các tiếng bíp
+    }
   }
 }
 
 void feedbackSuccess() {
+  blinkLed(LED_SUCCESS, 2, 150);
+  beep(1, 200); // 1 tiếng bíp khi đăng nhập thành công
+}
+
+void feedbackEnrollStep1() {
+  blinkLed(LED_SUCCESS, 2, 200);
+  beep(1, 100); // 1 tiếng bíp ngắn khi đăng kí thành công lần 1
+}
+
+void feedbackEnrollComplete() {
   blinkLed(LED_SUCCESS, 3, 150);
-  playTone(1500, 100);
-  delay(50);
-  playTone(2000, 100);
-  delay(50);
-  playTone(2500, 200);
+  beep(3, 100); // 3 tiếng bíp khi hoàn thành đăng kí
 }
 
 void feedbackError() {
   blinkLed(LED_ERROR, 3, 200);
-  playTone(400, 300);
-  delay(100);
-  playTone(300, 500);
+  beep(2, 300); // 2 tiếng bíp dài báo lỗi
 }
 
 void feedbackWaiting() {
   blinkLed(LED_STATUS, 2, 100);
-  playTone(1000, 100);
+  // Không bíp khi đang chờ để tránh ồn
 }

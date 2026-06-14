@@ -1,7 +1,43 @@
 import { memo, useId, useMemo, useCallback } from 'react';
 import { PRIORITY, ROBOT_STATUS } from '../constants';
 
-// === Geometry helpers ===
+// === Helpers to map positionPct (0–100) → (x, y, angle) on the rail polyline ===
+
+function computeSegmentLengths(points) {
+  const lengths = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i + 1].x - points[i].x;
+    const dy = points[i + 1].y - points[i].y;
+    lengths.push(Math.hypot(dx, dy));
+  }
+  return lengths;
+}
+
+function getPositionOnRail(railPoints, pct) {
+  if (!railPoints || railPoints.length < 2) return { x: 0, y: 0, angle: 0 };
+  const clampedPct = Math.min(Math.max(pct, 0), 100);
+
+  const segLengths = computeSegmentLengths(railPoints);
+  const totalLength = segLengths.reduce((a, b) => a + b, 0);
+  const targetDist = (clampedPct / 100) * totalLength;
+
+  let accumulated = 0;
+  for (let i = 0; i < segLengths.length; i++) {
+    const segLen = segLengths[i];
+    if (accumulated + segLen >= targetDist || i === segLengths.length - 1) {
+      const t = segLen > 0 ? (targetDist - accumulated) / segLen : 0;
+      const p0 = railPoints[i];
+      const p1 = railPoints[i + 1] || p0;
+      const x = p0.x + t * (p1.x - p0.x);
+      const y = p0.y + t * (p1.y - p0.y);
+      const angle = (Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180) / Math.PI;
+      return { x, y, angle };
+    }
+    accumulated += segLen;
+  }
+  const last = railPoints[railPoints.length - 1];
+  return { x: last.x, y: last.y, angle: 0 };
+}
 
 function getTrackAngle(railPoints, index) {
   const point = railPoints[index];
@@ -202,21 +238,35 @@ const StationNode = memo(function StationNode({ station, tx, ty, angle, onClick 
   );
 });
 
-const CabinSprite = memo(function CabinSprite({ pose, ledColor, status, moveId, ids, animating }) {
+const SMOOTH_TRANSITION = 'transform 0.4s cubic-bezier(0.25, 0.1, 0.25, 1)';
+
+const CabinSprite = memo(function CabinSprite({ pose, ledColor, status, moveId, ids, animating, useTransition }) {
   const blinkDur = status === ROBOT_STATUS.MOVING ? '0.6s' : '1.4s';
 
   return (
     <>
       {/* Motion trail */}
       {animating && (
-        <g transform={`translate(${pose.x}, ${pose.y}) rotate(${pose.angle})`} opacity="0.45">
+        <g
+          style={{
+            transform: `translate(${pose.x}px, ${pose.y}px) rotate(${pose.angle}deg)`,
+            ...(useTransition ? { transition: SMOOTH_TRANSITION } : {}),
+          }}
+          opacity="0.45"
+        >
           <path d="M -86 0 L -42 -8 L -42 8 Z" fill="#80deea" filter={`url(#${ids.softBlur})`} />
           <path d="M -106 0 L -58 -11 L -58 11 Z" fill="#26c6da" filter={`url(#${ids.softBlur})`} />
         </g>
       )}
 
-      {/* Cabin body */}
-      <g key={`cabin-${moveId}`} transform={`translate(${pose.x}, ${pose.y}) rotate(${pose.angle})`}>
+      {/* Cabin body — smooth glide via CSS transition */}
+      <g
+        key={`cabin-${moveId}`}
+        style={{
+          transform: `translate(${pose.x}px, ${pose.y}px) rotate(${pose.angle}deg)`,
+          ...(useTransition ? { transition: SMOOTH_TRANSITION } : {}),
+        }}
+      >
         {/* Shadow */}
         <ellipse cx="10" cy="32" rx="48" ry="10" fill="rgba(0,0,0,0.35)" filter={`url(#${ids.softBlur})`} />
 
@@ -254,9 +304,62 @@ const CabinSprite = memo(function CabinSprite({ pose, ledColor, status, moveId, 
   );
 });
 
+// === Encoder position overlay (shown inside SVG) ===
+
+const BAR_TRANSITION = 'all 0.4s cubic-bezier(0.25, 0.1, 0.25, 1)';
+
+const EncoderOverlay = memo(function EncoderOverlay({ encoderData }) {
+  if (!encoderData) return null;
+  const { positionCm, positionPct, speedCmPerSec, direction, railLengthCm, outOfBounds } = encoderData;
+
+  const dirArrow = direction === 'TIEN' ? '→' : direction === 'LUI' ? '←' : '●';
+  const dirColor = direction === 'TIEN' ? '#00e5ff' : direction === 'LUI' ? '#ffa726' : '#66ff99';
+  const pct = Math.min(Math.max(Number(positionPct) || 0, 0), 100);
+  const barWidth = 1560; // SVG units (viewBox 1600, with 20px margin each side)
+  const filledWidth = (pct / 100) * barWidth;
+
+  return (
+    <g>
+      {/* Position progress bar at bottom — smooth transition */}
+      <rect x={20} y={388} width={barWidth} height={10} rx={5} fill="rgba(255,255,255,0.08)" />
+      <rect x={20} y={388} width={Math.max(filledWidth, 0)} height={10} rx={5}
+        fill={outOfBounds ? '#ff5252' : '#00e5ff'} opacity={0.85}
+        style={{ transition: BAR_TRANSITION }} />
+      {/* Cabin position marker on bar — smooth glide */}
+      <circle cx={20 + filledWidth} cy={393} r={7} fill={outOfBounds ? '#ff5252' : '#00e5ff'}
+        stroke="white" strokeWidth={2}
+        style={{ transition: BAR_TRANSITION }} />
+
+      {/* Info strip bottom-right */}
+      <rect x={1300} y={340} width={280} height={44} rx={8} fill="rgba(0,0,0,0.55)" />
+      <text x={1315} y={358} fill="#b0bec5" fontSize={11} fontFamily="monospace">VỊ TRÍ ENCODER</text>
+      <text x={1315} y={376} fill="white" fontSize={13} fontWeight="bold" fontFamily="monospace">
+        {`${Number(positionCm).toFixed(1)} cm`}
+      </text>
+      <text x={1430} y={376} fill={dirColor} fontSize={13} fontWeight="bold" fontFamily="monospace">
+        {`${dirArrow} ${Math.abs(Number(speedCmPerSec)).toFixed(1)} cm/s`}
+      </text>
+
+      {/* Station labels on bar */}
+      <text x={20} y={408} fill="#78909c" fontSize={9} fontFamily="monospace">ST-01</text>
+      <text x={1555} y={408} fill="#78909c" fontSize={9} fontFamily="monospace" textAnchor="end">ST-04</text>
+      <text x={20 + barWidth / 2} y={408} fill="#78909c" fontSize={9} fontFamily="monospace" textAnchor="middle">
+        {`${Number(railLengthCm / 2).toFixed(0)} cm`}
+      </text>
+
+      {/* Out of bounds warning */}
+      {outOfBounds && (
+        <text x={800} y={370} fill="#ff5252" fontSize={14} fontWeight="bold" fontFamily="monospace" textAnchor="middle">
+          ⚠ VƯỢT BIÊN RAY
+        </text>
+      )}
+    </g>
+  );
+});
+
 // === Main component ===
 
-const ScadaSVGMap = memo(function ScadaSVGMap({ scada }) {
+const ScadaSVGMap = memo(function ScadaSVGMap({ scada, encoderData }) {
   const { robotState, stations, railPoints, animating, animPos, moveId, callRobot } = scada;
   const rawId = useId();
 
@@ -312,6 +415,12 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada }) {
     [stations, railPoints]
   );
 
+  // If encoder data is available, override pose with real hardware position
+  const encoderPose = useMemo(() => {
+    if (!encoderData || typeof encoderData.positionPct !== 'number') return null;
+    return getPositionOnRail(railPoints, encoderData.positionPct);
+  }, [encoderData, railPoints]);
+
   const robotIdleAngle = useMemo(
     () => getTrackAngle(railPoints, robotState.index),
     [railPoints, robotState.index]
@@ -319,16 +428,19 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada }) {
 
   const ledColor = useMemo(() => getStatusLedColor(robotState.status), [robotState.status]);
 
-  const cabinPose = animating
-    ? { x: animPos.x, y: animPos.y, angle: animPos.angle }
-    : { x: robotState.x, y: robotState.y, angle: robotIdleAngle };
+  // Priority: encoderData (real hardware) > animation > idle position
+  const cabinPose = encoderPose
+    ? encoderPose
+    : animating
+      ? { x: animPos.x, y: animPos.y, angle: animPos.angle }
+      : { x: robotState.x, y: robotState.y, angle: robotIdleAngle };
 
   return (
     <svg
       width="100%"
       viewBox="0 0 1600 420"
       preserveAspectRatio="xMidYMid meet"
-      style={{ display: 'block', width: '100%', height: 'clamp(250px, 25vw, 300px)' }}
+      style={{ display: 'block', width: '100%', height: 'clamp(260px, 26vw, 320px)' }}
     >
       <RailDefs ids={ids} />
       <RailTrack railGeometry={railGeometry} ids={ids} />
@@ -350,8 +462,23 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada }) {
         status={robotState.status}
         moveId={moveId}
         ids={ids}
-        animating={animating}
+        animating={animating && !encoderPose}
+        useTransition={!!encoderPose}
       />
+
+      {/* Encoder real-time position overlay */}
+      <EncoderOverlay encoderData={encoderData} />
+
+      {/* Debug: encoder data connection status */}
+      <g>
+        <rect x={20} y={10} width={encoderData ? 220 : 160} height={24} rx={6}
+          fill={encoderData ? 'rgba(0,200,83,0.85)' : 'rgba(255,50,50,0.75)'} />
+        <text x={30} y={27} fill="white" fontSize={11} fontWeight="bold" fontFamily="monospace">
+          {encoderData
+            ? `✓ ENCODER: ${Number(encoderData.positionPct).toFixed(1)}% | ${Number(encoderData.positionCm).toFixed(0)}cm`
+            : '✗ NO ENCODER DATA'}
+        </text>
+      </g>
     </svg>
   );
 });

@@ -613,7 +613,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
                 <MenuItem value="barcode">Mã mẫu</MenuItem>
                 <MenuItem value="patientName">Tên bệnh nhân</MenuItem>
                 <MenuItem value="testType">Loại xét nghiệm</MenuItem>
-                <MenuItem value="priority">Mức ưu tiên</MenuItem>
+                <MenuItem value="destinationStationName">Trạm đích</MenuItem>
               </Select>
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
@@ -635,7 +635,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
                   <TableCell>Mã mẫu</TableCell>
                   <TableCell>Bệnh nhân</TableCell>
                   <TableCell>Xét nghiệm</TableCell>
-                  <TableCell>Ưu tiên</TableCell>
+                  <TableCell>Trạm đích</TableCell>
                   <TableCell>Thời điểm quét</TableCell>
                   <TableCell>Trạng thái</TableCell>
                 </TableRow>
@@ -646,7 +646,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
                     <TableCell>{specimen.barcode}</TableCell>
                     <TableCell>{specimen.patientName}</TableCell>
                     <TableCell>{specimen.testType}</TableCell>
-                    <TableCell>{specimen.priority}</TableCell>
+                    <TableCell>{specimen.destinationStationName || 'Chưa chọn'}</TableCell>
                     <TableCell>{specimen.scanTime}</TableCell>
                     <TableCell>{specimen.status || 'scanned'}</TableCell>
                   </TableRow>

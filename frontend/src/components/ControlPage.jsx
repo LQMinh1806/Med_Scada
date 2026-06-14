@@ -4,21 +4,29 @@ import {
   Box,
   Button,
   Chip,
+  Divider,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Grid,
+  IconButton,
+  Paper,
   Stack,
+  Tooltip,
   Typography,
   Fade,
   alpha,
 } from '@mui/material';
-import { PriorityHigh } from '@mui/icons-material';
+import {
+  Star,
+  StarBorder,
+  AltRoute,
+} from '@mui/icons-material';
 import StationControlCard from './StationControlCard';
 import SpecimenScanPanel from './SpecimenScanPanel';
 import EStopButton from './EStopButton';
-import { PRIORITY, USER_ROLES, ROBOT_STATUS } from '../constants';
+import { ROBOT_STATUS } from '../constants';
 import { useNotification } from '../contexts/NotificationContext';
 
 
@@ -33,7 +41,11 @@ const ControlPage = memo(function ControlPage({ scada }) {
     lookupBarcode,
     removeFromScanList,
     clearScanList,
-    dispatchBatchSpecimens,
+    updateScanListDestination,
+    previewDispatchRoute,
+    startDispatchRoute,
+    activeDispatchRoute,
+    confirmRouteStop,
     emergencyStop,
     maintenanceMode,
     queue,
@@ -42,39 +54,127 @@ const ControlPage = memo(function ControlPage({ scada }) {
 
   const notifications = useNotification();
 
-  const [dispatchDialog, setDispatchDialog] = useState({ open: false, station: null });
+  const [dispatchDialog, setDispatchDialog] = useState({
+    open: false,
+    originStation: null,
+    selectedStationIds: [],
+    priorityStationId: null,
+  });
 
-  const canDispatch = scanList.length > 0 && !maintenanceMode.enabled;
-  const hasSTAT = scanList.some((s) => s.priority === PRIORITY.STAT);
+  const missingDestinationCount = scanList.filter((specimen) => !specimen.destinationStationId).length;
+  const canDispatch = scanList.length > 0 && missingDestinationCount === 0 && !maintenanceMode.enabled && !activeDispatchRoute;
+  const activeRouteStop = activeDispatchRoute?.stops?.[activeDispatchRoute.currentStopIndex] || null;
+  const canAppendSpecimensAtStop = Boolean(
+    activeDispatchRoute?.status === 'waiting_confirm' &&
+    activeRouteStop &&
+    (
+      scada.currentUser?.role === 'tech' ||
+      scada.currentUser?.stationId === activeRouteStop.stationId
+    )
+  );
+
+  const waitingSpecimenCounts = useMemo(() => {
+    const counts = {};
+    const addCount = (stationId, count = 1) => {
+      if (!stationId || count <= 0) return;
+      counts[stationId] = (counts[stationId] || 0) + count;
+    };
+
+    const currentStation = stations.find((station) => station.idx === robotState.index);
+    const scanSourceStationId = scada.currentUser?.stationId || currentStation?.id || null;
+    addCount(scanSourceStationId, scanList.length);
+
+    if (activeDispatchRoute?.specimenRecords?.length) {
+      const confirmedStationIds = new Set(
+        (activeDispatchRoute.stops || [])
+          .filter((stop) => stop.status === 'confirmed')
+          .map((stop) => stop.stationId)
+      );
+
+      (activeDispatchRoute.stops || []).forEach((stop) => {
+        if (confirmedStationIds.has(stop.stationId)) return;
+        const stopCount = Number(stop.specimenCount) || (
+          Array.isArray(stop.specimenBarcodes) ? stop.specimenBarcodes.length : 0
+        );
+        addCount(stop.stationId, stopCount);
+      });
+    }
+
+    return counts;
+  }, [activeDispatchRoute, robotState.index, scanList.length, scada.currentUser?.stationId, stations]);
 
   const handleCall = useCallback(
     (stationId) => {
-      callRobot(stationId, hasSTAT ? PRIORITY.STAT : PRIORITY.ROUTINE);
+      callRobot(stationId);
     },
-    [callRobot, hasSTAT]
+    [callRobot]
   );
 
   const handleDispatchRequest = useCallback(
     (station) => {
       if (scanList.length === 0 || maintenanceMode.enabled) return;
-      setDispatchDialog({ open: true, station });
+      const selectedStationIds = [...new Set(
+        scanList
+          .map((specimen) => specimen.destinationStationId)
+          .filter((stationId) => stationId && stations.some((item) => item.id === stationId))
+      )];
+      if (selectedStationIds.length === 0 || missingDestinationCount > 0) {
+        notifications.notify('Chọn trạm đích cho tất cả mẫu trước khi tạo lộ trình', 'warning', { duration: 5000 });
+        return;
+      }
+      setDispatchDialog({
+        open: true,
+        originStation: station,
+        selectedStationIds,
+        priorityStationId: null,
+      });
     },
-    [scanList.length, maintenanceMode.enabled]
+    [scanList, stations, missingDestinationCount, maintenanceMode.enabled, notifications]
   );
 
   const handleCancelDispatch = useCallback(() => {
-    setDispatchDialog({ open: false, station: null });
+    setDispatchDialog({
+      open: false,
+      originStation: null,
+      selectedStationIds: [],
+      priorityStationId: null,
+    });
+  }, []);
+
+  const handleTogglePriorityStation = useCallback((stationId) => {
+    setDispatchDialog((prev) => {
+      return {
+        ...prev,
+        priorityStationId: prev.priorityStationId === stationId ? null : stationId,
+      };
+    });
   }, []);
 
   const handleConfirmDispatch = useCallback(() => {
-    if (!dispatchDialog.station || scanList.length === 0) return;
-    const stationName = dispatchDialog.station.name;
+    if (!dispatchDialog.originStation || scanList.length === 0 || dispatchDialog.selectedStationIds.length === 0) return;
     const count = scanList.length;
-    const dispatched = dispatchBatchSpecimens(dispatchDialog.station.id);
-    if (!dispatched) return;
-    notifications.notifyDispatchSuccess(`${count} mẫu`, stationName);
-    setDispatchDialog({ open: false, station: null });
-  }, [scanList, dispatchDialog.station, dispatchBatchSpecimens, notifications]);
+    const route = startDispatchRoute(
+      dispatchDialog.originStation.id,
+      dispatchDialog.priorityStationId
+    );
+    if (!route) return;
+    const routeText = route.stops.map((stop) => stop.stationName).join(' -> ');
+    notifications.notify(`Đã tạo lộ trình ${count} mẫu: ${routeText}`, 'success', { duration: 6000 });
+    setDispatchDialog({
+      open: false,
+      originStation: null,
+      selectedStationIds: [],
+      priorityStationId: null,
+    });
+  }, [dispatchDialog.originStation, dispatchDialog.priorityStationId, dispatchDialog.selectedStationIds, notifications, scanList.length, startDispatchRoute]);
+
+  const handleConfirmPickup = useCallback((stationId) => {
+    const ok = confirmRouteStop(stationId);
+    if (ok) {
+      const stationName = stations.find((station) => station.id === stationId)?.name || stationId;
+      notifications.notify(`Đã xác nhận lấy hàng tại ${stationName}`, 'success', { duration: 5000 });
+    }
+  }, [confirmRouteStop, notifications, stations]);
 
 
   const handleEStop = useCallback(() => {
@@ -95,31 +195,60 @@ const ControlPage = memo(function ControlPage({ scada }) {
       if (!map[sid]) {
         map[sid] = {
           position: idx + 1,
-          priority: item.priority,
           type: item.type,
-          // Station has only ROUTINE entries — allows STAT override
-          hasRoutineOnly: item.priority === PRIORITY.ROUTINE,
         };
-      } else {
-        // FIX: If ANY task for this station is STAT, mark hasRoutineOnly = false
-        if (item.priority === PRIORITY.STAT) {
-          map[sid].hasRoutineOnly = false;
-        }
       }
     });
     return map;
   }, [queue]);
 
+  const routeStopMap = useMemo(() => {
+    const map = {};
+    if (!activeDispatchRoute) return map;
+    activeDispatchRoute.stops.forEach((stop, index) => {
+      const isCurrentStop = index === activeDispatchRoute.currentStopIndex;
+      map[stop.stationId] = {
+        ...stop,
+        position: index + 1,
+        total: activeDispatchRoute.stops.length,
+        isCurrentStop,
+        canConfirm: activeDispatchRoute.status === 'waiting_confirm' && isCurrentStop,
+        isPriority: activeDispatchRoute.priorityStationId === stop.stationId,
+      };
+    });
+    return map;
+  }, [activeDispatchRoute]);
+
   const stationViewModels = useMemo(
     () =>
       stations.map((station) => ({
-        station,
+        station: {
+          ...station,
+          samples: waitingSpecimenCounts[station.id] || 0,
+        },
         isCurrent: robotState.index === station.idx,
         isTarget: robotState.targetId === station.id,
         queueInfo: stationQueueMap[station.id] || null,
+        routeStopInfo: routeStopMap[station.id] || null,
       })),
-    [stations, robotState.index, robotState.targetId, stationQueueMap]
+    [stations, robotState.index, robotState.targetId, routeStopMap, stationQueueMap, waitingSpecimenCounts]
   );
+
+  const destinationOptions = useMemo(() => {
+    if (!dispatchDialog.originStation) return [];
+    return dispatchDialog.selectedStationIds
+      .map((stationId) => stations.find((station) => station.id === stationId))
+      .filter(Boolean);
+  }, [dispatchDialog.originStation, dispatchDialog.selectedStationIds, stations]);
+
+  const routePreview = useMemo(() => {
+    if (!dispatchDialog.originStation || dispatchDialog.selectedStationIds.length === 0) return [];
+    return previewDispatchRoute(
+      dispatchDialog.originStation.id,
+      dispatchDialog.selectedStationIds,
+      dispatchDialog.priorityStationId
+    );
+  }, [dispatchDialog.originStation, dispatchDialog.priorityStationId, dispatchDialog.selectedStationIds, previewDispatchRoute]);
 
   return (
     <Fade in timeout={400}>
@@ -207,16 +336,43 @@ const ControlPage = memo(function ControlPage({ scada }) {
             </Alert>
           )}
 
+          {activeDispatchRoute && (
+            <Alert
+              severity={activeDispatchRoute.status === 'waiting_confirm' ? 'warning' : 'info'}
+              icon={<AltRoute />}
+              sx={{ mb: 2, fontWeight: 600 }}
+            >
+              Lộ trình đang chạy:{' '}
+              <strong>{activeDispatchRoute.originStationName}</strong>
+              {' -> '}
+              {activeDispatchRoute.stops.map((stop, index) => (
+                <span key={stop.stationId}>
+                  {index > 0 ? ' -> ' : ''}
+                  {stop.stationName}
+                  {activeDispatchRoute.priorityStationId === stop.stationId ? ' ★' : ''}
+                </span>
+              ))}
+              {activeDispatchRoute.status === 'waiting_confirm'
+                ? ' - Đang chờ xác nhận đã lấy hàng.'
+                : ' - Cabin đang di chuyển theo lộ trình.'}
+              {canAppendSpecimensAtStop
+                ? ' Có thể quét thêm mẫu tại trạm này trước khi xác nhận để ghép vào tuyến.'
+                : ''}
+            </Alert>
+          )}
+
           <SpecimenScanPanel
             scanList={scanList}
             onLookupBarcode={lookupBarcode}
             onRemoveFromList={removeFromScanList}
             onClearList={clearScanList}
+            onUpdateDestination={updateScanListDestination}
+            stations={stations}
             scanFeedback={scanFeedback}
           />
 
           <Grid container spacing={1} justifyContent="center" alignItems="stretch">
-            {stationViewModels.map(({ station, isCurrent, isTarget, queueInfo }) => (
+            {stationViewModels.map(({ station, isCurrent, isTarget, queueInfo, routeStopInfo }) => (
               <Grid item xs={12} sm={6} md={3} key={station.id} sx={{ display: 'flex' }}>
                 <StationControlCard
                   station={station}
@@ -224,10 +380,11 @@ const ControlPage = memo(function ControlPage({ scada }) {
                   isTarget={isTarget}
                   onCall={handleCall}
                   onDispatchRequest={handleDispatchRequest}
-                  canDispatch={canDispatch}
-                  hasStatSpecimen={hasSTAT}
-                  disableActions={maintenanceMode.enabled}
+                  canDispatch={canDispatch && isCurrent}
+                  disableActions={maintenanceMode.enabled || Boolean(activeDispatchRoute)}
                   queueInfo={queueInfo}
+                  routeStopInfo={routeStopInfo}
+                  onConfirmPickup={handleConfirmPickup}
                   currentUser={scada.currentUser}
                 />
               </Grid>
@@ -237,33 +394,115 @@ const ControlPage = memo(function ControlPage({ scada }) {
           <Dialog
             open={dispatchDialog.open}
             onClose={handleCancelDispatch}
-            maxWidth="sm"
+            maxWidth="md"
             fullWidth
             TransitionComponent={Fade}
           >
             <DialogTitle
               sx={{
-                bgcolor: hasSTAT ? '#C41C1C' : 'primary.main',
+                bgcolor: 'primary.main',
                 color: '#111',
               }}
             >
-              {hasSTAT && <PriorityHigh sx={{ mr: 1, verticalAlign: 'middle' }} />}
-              {hasSTAT ? 'DISPATCH KHẨN CẤP (STAT)' : 'Xác nhận dispatch cabin'}
+              Tạo lộ trình điều cabin
             </DialogTitle>
             <DialogContent dividers sx={{ pt: 2 }}>
               <Typography sx={{ mb: 2 }}>
-                Xác nhận vận chuyển cabin cùng{' '}
-                <strong>{scanList.length} mẫu bệnh phẩm</strong> đến{' '}
-                <strong>{dispatchDialog.station?.name}</strong>?
+                Cabin sẽ xuất phát từ <strong>{dispatchDialog.originStation?.name}</strong> cùng{' '}
+                <strong>{scanList.length} mẫu bệnh phẩm</strong>. Các trạm đích được lấy từ từng mẫu,
+                có thể bấm ngôi sao để ưu tiên một trạm chạy trước.
               </Typography>
+
+              <Typography sx={{ mb: 0.75, fontWeight: 800, color: 'text.primary' }}>
+                Trạm cần điều đến
+              </Typography>
+              <Stack spacing={0.75} sx={{ mb: 2 }}>
+                {destinationOptions.map((station) => {
+                  const isPriority = dispatchDialog.priorityStationId === station.id;
+                  const distance = dispatchDialog.originStation
+                    ? Math.abs(station.idx - dispatchDialog.originStation.idx)
+                    : 0;
+                  const specimenCount = scanList.filter((specimen) => specimen.destinationStationId === station.id).length;
+
+                  return (
+                    <Paper
+                      key={station.id}
+                      sx={{
+                        p: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        border: `1px solid ${isPriority ? alpha('#FF9800', 0.5) : alpha('#1976D2', 0.18)}`,
+                        bgcolor: isPriority ? alpha('#FF9800', 0.08) : alpha('#65B5FF', 0.1),
+                      }}
+                    >
+                      <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 800, color: 'text.primary' }}>
+                          {station.name}
+                        </Typography>
+                        <Typography sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
+                          {station.id} · {specimenCount} mẫu · cách trạm nguồn {distance} đoạn ray
+                        </Typography>
+                      </Box>
+                      <Tooltip title={isPriority ? 'Bỏ ưu tiên' : 'Ưu tiên trạm này chạy trước'}>
+                        <IconButton
+                          color={isPriority ? 'warning' : 'default'}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleTogglePriorityStation(station.id);
+                          }}
+                        >
+                          {isPriority ? <Star /> : <StarBorder />}
+                        </IconButton>
+                      </Tooltip>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+
+              <Box
+                sx={{
+                  p: 1.25,
+                  mb: 2,
+                  borderRadius: 2,
+                  bgcolor: alpha('#0BDF50', 0.08),
+                  border: `1px solid ${alpha('#0BDF50', 0.18)}`,
+                }}
+              >
+                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', fontWeight: 800, mb: 0.5 }}>
+                  LỘ TRÌNH DỰ KIẾN
+                </Typography>
+                {routePreview.length > 0 ? (
+                  <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" alignItems="center">
+                    <Chip label={dispatchDialog.originStation?.name || 'Trạm nguồn'} size="small" color="primary" />
+                    {routePreview.map((station, index) => (
+                      <Box key={station.id} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                        <Typography sx={{ color: 'text.secondary', fontWeight: 800 }}>→</Typography>
+                        <Chip
+                          label={`${index + 1}. ${station.name}${dispatchDialog.priorityStationId === station.id ? ' ★' : ''}`}
+                          size="small"
+                          color={dispatchDialog.priorityStationId === station.id ? 'warning' : 'default'}
+                          sx={{ fontWeight: 700 }}
+                        />
+                      </Box>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography sx={{ color: 'text.secondary', fontSize: '0.85rem' }}>
+                    Chưa chọn trạm đích.
+                  </Typography>
+                )}
+              </Box>
+
+              <Divider sx={{ mb: 2 }} />
 
               {scanList.length > 0 ? (
                 <Box
                   sx={{
                     p: 2,
                     borderRadius: 2,
-                    bgcolor: hasSTAT ? alpha('#C41C1C', 0.07) : alpha('#65B5FF', 0.12),
-                    border: `1px solid ${hasSTAT ? alpha('#C41C1C', 0.2) : alpha('#65B5FF', 0.25)}`,
+                    bgcolor: alpha('#65B5FF', 0.12),
+                    border: `1px solid ${alpha('#65B5FF', 0.25)}`,
                     maxHeight: 200,
                     overflow: 'auto',
                   }}
@@ -299,19 +538,6 @@ const ControlPage = memo(function ControlPage({ scada }) {
                         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
                           {specimen.testType}
                         </Typography>
-                        {specimen.priority === PRIORITY.STAT && (
-                          <Chip
-                            label="STAT"
-                            size="small"
-                            sx={{
-                              fontWeight: 800,
-                              bgcolor: '#C41C1C',
-                              color: '#fff',
-                              fontSize: '0.65rem',
-                              height: 20,
-                            }}
-                          />
-                        )}
                       </Box>
                     ))}
                   </Stack>
@@ -328,10 +554,10 @@ const ControlPage = memo(function ControlPage({ scada }) {
                 variant="contained"
                 color="primary"
                 onClick={handleConfirmDispatch}
-                disabled={scanList.length === 0}
+                disabled={scanList.length === 0 || dispatchDialog.selectedStationIds.length === 0}
                 sx={{ fontWeight: 800, minWidth: 140, minHeight: 46 }}
               >
-                Dispatch {scanList.length} mẫu
+                Tạo lộ trình {scanList.length} mẫu
               </Button>
             </DialogActions>
           </Dialog>

@@ -14,7 +14,7 @@ import {
   ROBOT_STATUS,
 } from '../constants';
 import useScadaApi from './scada/useScadaApi';
-import useQueueScheduler, { DIRECTION } from './scada/useQueueScheduler';
+import useQueueScheduler, { DIRECTION, QUEUE_PRIORITY } from './scada/useQueueScheduler';
 import useOpcUaSocket from './useOpcUaSocket';
 import {
   clamp,
@@ -30,19 +30,66 @@ import {
 } from './scada/scadaHelpers';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+const SIMULATION_MODE = import.meta.env.VITE_SIMULATION_MODE !== 'false';
 const SCADA_EVENTS_URL = `${API_BASE_URL}/events`;
 const SCADA_SYNC_KEY = 'scada:sync:event';
 const SCADA_SYNC_CHANNEL = 'scada:sync:channel';
 const SCADA_TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-const QUEUE_PRIORITY = {
-  ROUTINE: 'ROUTINE',
-  STAT: 'STAT',
+
+const ROUTE_STATUS = {
+  MOVING: 'moving',
+  WAITING_CONFIRM: 'waiting_confirm',
 };
-const ROBOT_DIRECTION = {
-  UP: 'UP',
-  DOWN: 'DOWN',
-  IDLE: 'IDLE',
+
+const ROUTE_STOP_STATUS = {
+  PENDING: 'pending',
+  MOVING: 'moving',
+  WAITING_CONFIRM: 'waiting_confirm',
+  CONFIRMED: 'confirmed',
 };
+
+function getStationById(stationId) {
+  return STATIONS.find((station) => station.id === stationId) || null;
+}
+
+function stationDistance(aId, bId) {
+  const a = getStationById(aId);
+  const b = getStationById(bId);
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  return Math.abs(a.idx - b.idx);
+}
+
+function orderDispatchDestinations(originStationId, destinationStationIds, priorityStationId = null) {
+  const uniqueDestinationIds = [...new Set(
+    (Array.isArray(destinationStationIds) ? destinationStationIds : [])
+      .map((stationId) => String(stationId || '').trim())
+      .filter((stationId) => stationId && stationId !== originStationId && getStationById(stationId))
+  )];
+
+  const ordered = [];
+  let remaining = uniqueDestinationIds;
+  let currentStationId = originStationId;
+
+  if (priorityStationId && remaining.includes(priorityStationId)) {
+    ordered.push(priorityStationId);
+    remaining = remaining.filter((stationId) => stationId !== priorityStationId);
+    currentStationId = priorityStationId;
+  }
+
+  while (remaining.length > 0) {
+    remaining.sort((a, b) => {
+      const distanceDelta = stationDistance(currentStationId, a) - stationDistance(currentStationId, b);
+      if (distanceDelta !== 0) return distanceDelta;
+      return getStationById(a).idx - getStationById(b).idx;
+    });
+    const nextStationId = remaining[0];
+    ordered.push(nextStationId);
+    currentStationId = nextStationId;
+    remaining = remaining.slice(1);
+  }
+
+  return ordered.map((stationId) => getStationById(stationId)).filter(Boolean);
+}
 
 // =====================================================
 // Main SCADA hook
@@ -55,6 +102,7 @@ export default function useScada() {
 
   // === Domain data ===
   const [users, setUsers] = useState(INITIAL_USERS);
+
   const [systemLogs, setSystemLogs] = useState([]);
   const [currentSpecimen, setCurrentSpecimen] = useState(null);
   const [scanList, setScanList] = useState([]);
@@ -66,6 +114,12 @@ export default function useScada() {
     reason: '',
     updatedAt: null,
   });
+  const [activeDispatchRoute, setActiveDispatchRouteState] = useState(null);
+
+  // === Cabin sensor state (ESP32 DHT11 + MPU6050) ===
+  const [cabinSensorData, setCabinSensorData] = useState(null);
+  const [sensorHistory, setSensorHistory] = useState([]);
+  const SENSOR_HISTORY_MAX = 60; // 2-min window at 2s interval
 
   // === Robot state ===
   const [robotState, setRobotState] = useState(() => {
@@ -103,6 +157,7 @@ export default function useScada() {
   const scanFeedbackTimerRef = useRef(null);
   const syncChannelRef = useRef(null);
   const lastAppliedSyncTsRef = useRef(0);
+  const authReconnectDoneRef = useRef(false);
   // FIX: Track whether initial robot state hydration has been done.
   // After the first hydration, subsequent SSE/polling syncs should NOT
   // overwrite robotState.status — otherwise the user's E-STOP reset
@@ -134,9 +189,64 @@ export default function useScada() {
 
   // === OPC UA Socket connection ===
   const opc = useOpcUaSocket();
+  const socketReconnect = opc.reconnectSocket;
 
   // Ref to break circular dependency: executeRobotMove ↔ processNextQueueTask
   const processQueueRef = useRef(null);
+  const activeDispatchRouteRef = useRef(activeDispatchRoute);
+
+  const setActiveDispatchRoute = useCallback((updater) => {
+    const nextRoute = typeof updater === 'function'
+      ? updater(activeDispatchRouteRef.current)
+      : updater;
+    activeDispatchRouteRef.current = nextRoute;
+    setActiveDispatchRouteState(nextRoute);
+    return nextRoute;
+  }, []);
+
+  // === Wire sensor:cabinData socket event ===
+  useEffect(() => {
+    opc.setOnCabinSensor((data) => {
+      if (!data || typeof data !== 'object') return;
+      setCabinSensorData(data);
+      setSensorHistory((prev) => {
+        const next = [...prev, data];
+        if (next.length > SENSOR_HISTORY_MAX) next.shift();
+        return next;
+      });
+    });
+  }, [opc]);
+
+  // === Fallback HTTP polling for encoder data (khi Socket.io không hoạt động qua domain) ===
+  useEffect(() => {
+    let active = true;
+
+    const pollEncoder = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/sensors/cabin/latest`, {
+          credentials: 'include',
+        });
+        if (res.ok && active) {
+          const data = await res.json();
+          if (data && typeof data === 'object' && data.positionPct != null) {
+            setCabinSensorData(data);
+          }
+        }
+      } catch {
+        // Bỏ qua lỗi mạng, thử lại lần sau
+      }
+    };
+
+    // Poll mỗi 300ms để cập nhật vị trí encoder liên tục (ESP32 gửi ngay khi xung thay đổi)
+    const interval = setInterval(pollEncoder, 300);
+    // Lần đầu tiên: poll ngay lập tức
+    pollEncoder();
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const toDateTimeText = useCallback((value) => {
     if (!value) return new Date().toLocaleString();
@@ -155,10 +265,12 @@ export default function useScada() {
   useEffect(() => {
     if (!isAuthenticated) {
       lastAppliedSyncTsRef.current = 0;
+      authReconnectDoneRef.current = false;
     }
   }, [isAuthenticated]);
 
-  // Build a serializable queue for cross-tab sync (strips metadata to keep payload small)
+  // Build a serializable queue for cross-tab/device sync.
+  // Keep route metadata so another account can continue/observe the same route.
   const buildQueueSnapshot = useCallback(() => {
     return queueRef.current.map(item => ({
       id: item.id,
@@ -166,10 +278,22 @@ export default function useScada() {
       type: item.type,
       priority: item.priority,
       timestamp: item.timestamp,
-      // metadata can contain non-serializable objects; keep only safe parts
       metadata: item.metadata ? {
         specimenRecord: item.metadata.specimenRecord || null,
+        specimenRecords: Array.isArray(item.metadata.specimenRecords)
+          ? item.metadata.specimenRecords
+          : null,
         dispatchTime: item.metadata.dispatchTime || null,
+        routeDelivery: Boolean(item.metadata.routeDelivery),
+        routeId: item.metadata.routeId || null,
+        stopIndex: Number.isInteger(item.metadata.stopIndex) ? item.metadata.stopIndex : null,
+        stopCount: Number.isInteger(item.metadata.stopCount) ? item.metadata.stopCount : null,
+        fromStationId: item.metadata.fromStationId || null,
+        stationId: item.metadata.stationId || null,
+        priorityStationId: item.metadata.priorityStationId || null,
+        isPriorityStop: Boolean(item.metadata.isPriorityStop),
+        isBatch: Boolean(item.metadata.isBatch),
+        batchCount: Number.isInteger(item.metadata.batchCount) ? item.metadata.batchCount : null,
       } : null,
     }));
   }, [queueRef]);
@@ -188,6 +312,9 @@ export default function useScada() {
       // Queue sync data
       queue: overrides.queue ?? buildQueueSnapshot(),
       cabinDirection: overrides.cabinDirection ?? directionRef.current,
+      activeDispatchRoute: overrides.activeDispatchRoute !== undefined
+        ? overrides.activeDispatchRoute
+        : activeDispatchRouteRef.current,
     };
   }, [buildQueueSnapshot, directionRef]);
 
@@ -222,7 +349,14 @@ export default function useScada() {
     if (Array.isArray(snapshot.queue)) {
       replaceQueue(snapshot.queue, snapshot.cabinDirection);
     }
-  }, [replaceQueue]);
+
+    if (Object.prototype.hasOwnProperty.call(snapshot, 'activeDispatchRoute')) {
+      const nextRoute = snapshot.activeDispatchRoute && typeof snapshot.activeDispatchRoute === 'object'
+        ? snapshot.activeDispatchRoute
+        : null;
+      setActiveDispatchRoute(nextRoute);
+    }
+  }, [replaceQueue, setActiveDispatchRoute]);
 
   const publishSyncSnapshot = useCallback((snapshot) => {
     if (typeof window === 'undefined') return;
@@ -411,7 +545,9 @@ export default function useScada() {
             testType: item.testType,
             priority: item.priority || PRIORITY.ROUTINE,
             scanTime: toDateTimeText(item.scanTime),
-            status: 'scanned',
+            status: item.status || 'pending',
+            destinationStationId: item.destinationStationId || null,
+            destinationStationName: item.destinationStationName || null,
           }))
         );
       }
@@ -634,21 +770,22 @@ export default function useScada() {
         patientName: specimen.patientName,
         testType: specimen.testType,
         priority: specimen.priority || PRIORITY.ROUTINE,
+        destinationStationId: specimen.destinationStationId || null,
+        destinationStationName: specimen.destinationStationName || null,
         status: specimen.status || 'pending',
         scanTime: new Date().toISOString(),
       };
 
-      // Add to scan list
-      setScanList((prev) => [...prev, record]);
+      const nextScanList = [...scanListRef.current, record];
+      scanListRef.current = nextScanList;
+      setScanList(nextScanList);
       // Also set as currentSpecimen for backward compatibility
       setCurrentSpecimen(record);
 
       setScanFeedback('success');
       clearScanFeedback();
 
-      const priorityLabel = record.priority === PRIORITY.STAT ? ' [STAT]' : '';
-      addLog(`Đã quét mẫu ${record.barcode}${priorityLabel} — ${record.patientName}`,
-        record.priority === PRIORITY.STAT ? 'error' : 'info');
+      addLog(`Đã quét mẫu ${record.barcode} — ${record.patientName}`, 'info');
 
       // Mark as scanned in backend
       apiRequest('/specimens/scan', {
@@ -658,6 +795,7 @@ export default function useScada() {
           patientName: record.patientName,
           testType: record.testType,
           priority: record.priority,
+          destinationStationId: record.destinationStationId,
           scanTime: record.scanTime,
         }),
       }).catch((error) => {
@@ -674,16 +812,78 @@ export default function useScada() {
   }, [addLog, apiRequest, clearScanFeedback]);
 
   const removeFromScanList = useCallback((barcode) => {
-    setScanList((prev) => prev.filter((s) => s.barcode !== barcode));
+    const nextScanList = scanListRef.current.filter((s) => s.barcode !== barcode);
+    scanListRef.current = nextScanList;
+    setScanList(nextScanList);
     addLog(`Đã xóa mẫu ${barcode} khỏi danh sách quét`, 'info');
   }, [addLog]);
 
   const clearScanList = useCallback(() => {
     const count = scanListRef.current.length;
+    scanListRef.current = [];
     setScanList([]);
     setCurrentSpecimen(null);
     if (count > 0) addLog(`Đã xóa ${count} mẫu khỏi danh sách quét`, 'info');
   }, [addLog]);
+
+  const updateScanListDestination = useCallback((barcode, stationId) => {
+    const normalizedBarcode = String(barcode || '').trim().toUpperCase();
+    const destinationStation = getStationById(stationId);
+    if (!normalizedBarcode || !destinationStation) {
+      addLog('Không thể cập nhật trạm đích cho mẫu', 'error');
+      return false;
+    }
+
+    let updatedRecord = null;
+    const nextScanList = scanListRef.current.map((item) => {
+      if (item.barcode !== normalizedBarcode) return item;
+      updatedRecord = {
+        ...item,
+        destinationStationId: destinationStation.id,
+        destinationStationName: destinationStation.name,
+      };
+      return updatedRecord;
+    });
+
+    if (!updatedRecord) {
+      addLog(`Không tìm thấy mẫu ${normalizedBarcode} trong danh sách quét`, 'error');
+      return false;
+    }
+
+    scanListRef.current = nextScanList;
+    setScanList(nextScanList);
+    setCurrentSpecimen((prev) => (
+      prev?.barcode === normalizedBarcode ? updatedRecord : prev
+    ));
+    setScannedSpecimens((prev) =>
+      prev.map((item) => (
+        item.barcode === normalizedBarcode
+          ? {
+            ...item,
+            destinationStationId: destinationStation.id,
+            destinationStationName: destinationStation.name,
+          }
+          : item
+      ))
+    );
+
+    apiRequest('/specimens/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        barcode: updatedRecord.barcode,
+        patientName: updatedRecord.patientName,
+        testType: updatedRecord.testType,
+        priority: updatedRecord.priority,
+        destinationStationId: destinationStation.id,
+        scanTime: updatedRecord.scanTime,
+      }),
+    }).catch((error) => {
+      addLog(`Lưu trạm đích ${updatedRecord.barcode} thất bại: ${error.message}`, 'error');
+    });
+
+    addLog(`Đã đặt trạm đích mẫu ${updatedRecord.barcode} -> ${destinationStation.name}`, 'info');
+    return true;
+  }, [addLog, apiRequest]);
 
   // Legacy single-specimen support (kept for backward compatibility)
   const registerScannedSpecimen = useCallback((specimen) => {
@@ -703,6 +903,8 @@ export default function useScada() {
       patientName: specimen.patientName,
       testType: specimen.testType,
       priority: specimen.priority || PRIORITY.ROUTINE,
+      destinationStationId: specimen.destinationStationId || null,
+      destinationStationName: specimen.destinationStationName || null,
       scanTime: scanTimeIso,
       status: 'scanned',
     };
@@ -715,8 +917,7 @@ export default function useScada() {
       return next;
     });
 
-    const priorityLabel = record.priority === PRIORITY.STAT ? ' [STAT]' : '';
-    addLog(`Đã quét mẫu ${record.barcode}${priorityLabel}`, record.priority === PRIORITY.STAT ? 'error' : 'info');
+    addLog(`Đã quét mẫu ${record.barcode}`, 'info');
 
     apiRequest('/specimens/scan', {
       method: 'POST',
@@ -725,6 +926,7 @@ export default function useScada() {
         patientName: record.patientName,
         testType: record.testType,
         priority: record.priority,
+        destinationStationId: record.destinationStationId,
         scanTime: record.scanTime,
       }),
     }).catch((error) => {
@@ -861,6 +1063,443 @@ export default function useScada() {
     rafRef.current = requestAnimationFrame(step);
   }, [stopAnimation]);
 
+  const previewDispatchRoute = useCallback((originStationId, destinationStationIds, priorityStationId = null) => (
+    orderDispatchDestinations(originStationId, destinationStationIds, priorityStationId)
+  ), []);
+
+  const buildRouteMoveMetadata = useCallback((route, stopIndex) => {
+    const stop = route.stops[stopIndex];
+    const fromStationId = stopIndex === 0
+      ? route.originStationId
+      : route.stops[stopIndex - 1]?.stationId;
+
+    return {
+      routeDelivery: true,
+      routeId: route.id,
+      stopIndex,
+      stopCount: route.stops.length,
+      fromStationId,
+      specimenRecord: route.specimenRecords[0],
+      specimenRecords: route.specimenRecords,
+      dispatchTime: route.dispatchTime,
+      isBatch: route.specimenRecords.length > 1,
+      batchCount: route.specimenRecords.length,
+      priorityStationId: route.priorityStationId,
+      isPriorityStop: route.priorityStationId === stop.stationId,
+      stationId: stop.stationId,
+    };
+  }, []);
+
+  const enqueueRouteStop = useCallback((route, stopIndex) => {
+    const stop = route.stops[stopIndex];
+    if (!stop) return false;
+
+    const metadata = buildRouteMoveMetadata(route, stopIndex);
+    const priority = metadata.isPriorityStop ? QUEUE_PRIORITY.STATION : PRIORITY.ROUTINE;
+    enqueue(stop.stationId, 'DISPATCH', priority, metadata);
+    addLog(
+      `[ROUTE] Chặng ${stopIndex + 1}/${route.stops.length}: điều cabin đến ${stop.stationName}${metadata.isPriorityStop ? ' (trạm ưu tiên)' : ''}`,
+      'info'
+    );
+    return true;
+  }, [addLog, buildRouteMoveMetadata, enqueue]);
+
+  const persistRouteStopDelivery = useCallback((route, stop, confirmedAt) => {
+    const allSpecimens = Array.isArray(route?.specimenRecords) ? route.specimenRecords : [];
+    const stopSpecimens = allSpecimens.filter((spec) => spec.destinationStationId === stop?.stationId);
+    if (!route || !stop || stopSpecimens.length === 0) {
+      addLog(`[ROUTE] Không có mẫu nào cần giao tại ${stop?.stationName || stop?.stationId || 'trạm này'}`, 'info');
+      return;
+    }
+
+    const toStation = getStationById(stop.stationId);
+    const resolveSourceStation = (spec) => (
+      getStationById(spec.fromStationId) ||
+      getStationById(stop.fromStationId || route.originStationId) ||
+      getStationById(route.originStationId)
+    );
+
+    const deliveredRecords = stopSpecimens.map((spec) => {
+      const sourceStation = resolveSourceStation(spec);
+      return {
+        specimenId: spec.id,
+        barcode: spec.barcode,
+        patientName: spec.patientName,
+        testType: spec.testType,
+        priority: spec.priority || PRIORITY.ROUTINE,
+        scanTime: spec.scanTime,
+        dispatchTime: route.dispatchTime,
+        arrivalTime: confirmedAt,
+        fromStationId: sourceStation?.id || route.originStationId,
+        fromStationName: sourceStation?.name || route.originStationName,
+        toStationId: stop.stationId,
+        toStationName: stop.stationName || toStation?.name || stop.stationId,
+        cabinId: robotStateRef.current.id,
+      };
+    });
+
+    setTransportedSpecimens((prev) => {
+      const next = [...deliveredRecords, ...prev];
+      if (next.length > MAX_SPECIMEN_HISTORY) next.length = MAX_SPECIMEN_HISTORY;
+      return next;
+    });
+
+    const specimenIds = stopSpecimens.map((spec) => spec.id);
+    setScannedSpecimens((prev) =>
+      prev.map((item) =>
+        specimenIds.includes(item.id)
+          ? {
+            ...item,
+            status: 'transported',
+            dispatchTime: route.dispatchTime,
+            arrivalTime: confirmedAt,
+            toStationId: stop.stationId,
+            toStationName: stop.stationName || toStation?.name || stop.stationId,
+          }
+          : item
+      )
+    );
+
+    const batchLabel = stopSpecimens.length > 1 ? `${stopSpecimens.length} mẫu` : `mẫu ${stopSpecimens[0].barcode}`;
+    addLog(`[ROUTE] Đã xác nhận lấy hàng ${batchLabel} tại ${stop.stationName}`, 'success');
+
+    const groupsBySource = new Map();
+    stopSpecimens.forEach((spec) => {
+      const sourceStation = resolveSourceStation(spec);
+      const key = sourceStation?.id || route.originStationId;
+      if (!groupsBySource.has(key)) {
+        groupsBySource.set(key, {
+          sourceStation,
+          specimens: [],
+        });
+      }
+      groupsBySource.get(key).specimens.push(spec);
+    });
+
+    groupsBySource.forEach(({ sourceStation, specimens }) => {
+      if (specimens.length > 1) {
+        apiRequest('/transports/batch-complete', {
+          method: 'POST',
+          body: JSON.stringify({
+            cabinId: robotStateRef.current.id,
+            status: 'arrived',
+            barcodes: specimens.map((spec) => spec.barcode),
+            dispatchTime: route.dispatchTime,
+            arrivalTime: confirmedAt,
+            fromStationId: sourceStation?.id || route.originStationId,
+            toStationId: stop.stationId,
+          }),
+        }).catch((error) => {
+          addLog(`Lưu xác nhận lộ trình thất bại: ${error.message}`, 'error');
+        });
+        return;
+      }
+
+      const specimen = specimens[0];
+      apiRequest('/transports/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          cabinId: robotStateRef.current.id,
+          status: 'arrived',
+          barcode: specimen.barcode,
+          patientName: specimen.patientName,
+          testType: specimen.testType,
+          priority: specimen.priority || PRIORITY.ROUTINE,
+          scanTime: specimen.scanTime,
+          dispatchTime: route.dispatchTime,
+          arrivalTime: confirmedAt,
+          fromStationId: sourceStation?.id || route.originStationId,
+          toStationId: stop.stationId,
+        }),
+      }).catch((error) => {
+        addLog(`Lưu xác nhận ${specimen.barcode} thất bại: ${error.message}`, 'error');
+      });
+    });
+  }, [addLog, apiRequest]);
+
+  const markRouteStopArrived = useCallback((metadata, target, arrivedTime) => {
+    const route = activeDispatchRouteRef.current;
+    if (!route || route.id !== metadata?.routeId) return false;
+    const cleanedQueue = queueRef.current.filter((item) => !(
+      item.metadata?.routeDelivery &&
+      item.metadata.routeId === route.id &&
+      item.metadata.stopIndex === metadata.stopIndex
+    ));
+    if (cleanedQueue.length !== queueRef.current.length) {
+      replaceQueue(cleanedQueue, directionRef.current);
+    }
+
+    const nextRoute = {
+      ...route,
+      status: ROUTE_STATUS.WAITING_CONFIRM,
+      currentStopIndex: metadata.stopIndex,
+      updatedAt: arrivedTime,
+      stops: route.stops.map((stop, index) => {
+        if (index !== metadata.stopIndex) return stop;
+        return {
+          ...stop,
+          status: ROUTE_STOP_STATUS.WAITING_CONFIRM,
+          fromStationId: metadata.fromStationId,
+          arrivalTime: arrivedTime,
+        };
+      }),
+    };
+
+    setActiveDispatchRoute(nextRoute);
+    addLog(`[ROUTE] Cabin đã đến ${target.name}. Chờ xác nhận đã lấy hàng.`, 'success');
+    publishSyncSnapshot(buildSyncSnapshot({
+      activeDispatchRoute: nextRoute,
+      queue: cleanedQueue,
+      cabinDirection: directionRef.current,
+    }));
+    return true;
+  }, [addLog, buildSyncSnapshot, directionRef, publishSyncSnapshot, queueRef, replaceQueue, setActiveDispatchRoute]);
+
+  const startDispatchRoute = useCallback((originStationId, priorityStationId = null) => {
+    const originStation = getStationById(originStationId);
+    const specimens = [...scanListRef.current];
+
+    if (!originStation || specimens.length === 0) {
+      addLog('Không thể tạo lộ trình: thiếu trạm nguồn, trạm đích hoặc mẫu bệnh phẩm', 'error');
+      return null;
+    }
+
+    const missingDestination = specimens.filter((spec) => !getStationById(spec.destinationStationId));
+    if (missingDestination.length > 0) {
+      addLog(`Không thể tạo lộ trình: ${missingDestination.length} mẫu chưa có trạm đích`, 'error');
+      return null;
+    }
+
+    const specimenDestinationIds = [...new Set(specimens.map((spec) => spec.destinationStationId))];
+    const routeStations = orderDispatchDestinations(originStationId, specimenDestinationIds, priorityStationId);
+
+    if (routeStations.length === 0) {
+      addLog('Không thể tạo lộ trình: trạm đích không hợp lệ hoặc trùng trạm nguồn', 'error');
+      return null;
+    }
+
+    if (maintenanceRef.current.enabled) {
+      addLog('[MAINTENANCE] Không thể tạo lộ trình khi đang bảo trì', 'maintenance');
+      return null;
+    }
+
+    if (activeDispatchRouteRef.current) {
+      addLog('Đang có lộ trình vận chuyển chưa hoàn tất', 'error');
+      return null;
+    }
+
+    if (queueRef.current.length > 0 || animatingRef.current || robotStateRef.current.status !== ROBOT_STATUS.READY) {
+      addLog('Cabin chưa sẵn sàng hoặc hàng chờ chưa trống', 'error');
+      return null;
+    }
+
+    if (robotStateRef.current.index !== originStation.idx) {
+      addLog(`Cabin chưa ở ${originStation.name}. Hãy gọi cabin về trạm trước khi tạo lộ trình.`, 'error');
+      return null;
+    }
+
+    const now = Date.now();
+    const route = {
+      id: `R-${now}`,
+      originStationId: originStation.id,
+      originStationName: originStation.name,
+      priorityStationId: priorityStationId && routeStations.some((station) => station.id === priorityStationId)
+        ? priorityStationId
+        : null,
+      status: ROUTE_STATUS.MOVING,
+      currentStopIndex: 0,
+      dispatchTime: new Date(now).toISOString(),
+      specimenRecords: specimens,
+      stops: routeStations.map((station, index) => ({
+        stationId: station.id,
+        stationName: station.name,
+        specimenCount: specimens.filter((spec) => spec.destinationStationId === station.id).length,
+        specimenBarcodes: specimens
+          .filter((spec) => spec.destinationStationId === station.id)
+          .map((spec) => spec.barcode),
+        status: index === 0 ? ROUTE_STOP_STATUS.MOVING : ROUTE_STOP_STATUS.PENDING,
+        fromStationId: index === 0 ? originStation.id : routeStations[index - 1]?.id,
+      })),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setActiveDispatchRoute(route);
+    currentSpecimenRef.current = null;
+    scanListRef.current = [];
+    setCurrentSpecimen(null);
+    setScanList([]);
+
+    const routeText = [originStation.name, ...route.stops.map((stop) => stop.stationName)].join(' -> ');
+    addLog(`[ROUTE] Tạo lộ trình ${specimens.length} mẫu: ${routeText}`, 'info');
+
+    if (!enqueueRouteStop(route, 0)) return null;
+    publishSyncSnapshot(buildSyncSnapshot({ activeDispatchRoute: route }));
+    setTimeout(() => {
+      processQueueRef.current?.(robotStateRef.current.index);
+    }, 0);
+
+    return route;
+  }, [addLog, buildSyncSnapshot, enqueueRouteStop, publishSyncSnapshot, queueRef, setActiveDispatchRoute]);
+
+  const confirmRouteStop = useCallback((stationId) => {
+    const route = activeDispatchRouteRef.current;
+    if (!route || route.status !== ROUTE_STATUS.WAITING_CONFIRM) return false;
+
+    const stopIndex = route.currentStopIndex;
+    const stop = route.stops[stopIndex];
+    if (!stop || stop.stationId !== stationId) return false;
+
+    const currentRole = String(currentUser?.role || '').toLowerCase();
+    const hasConfirmPermission = currentRole === USER_ROLES.TECH || currentUser?.stationId === stationId;
+    if (!hasConfirmPermission) {
+      const stationName = getStationById(stationId)?.name || stationId;
+      addLog(`Tài khoản hiện tại không có quyền xác nhận tại ${stationName}`, 'error');
+      return false;
+    }
+
+    const handoffCandidates = [...scanListRef.current];
+    if (handoffCandidates.length > 0) {
+      const routeBarcodes = new Set(
+        (route.specimenRecords || []).map((spec) => String(spec.barcode || '').trim().toUpperCase())
+      );
+      const duplicateInRoute = handoffCandidates.find((spec) =>
+        routeBarcodes.has(String(spec.barcode || '').trim().toUpperCase())
+      );
+      if (duplicateInRoute) {
+        addLog(`Mẫu ${duplicateInRoute.barcode} đang nằm trong lộ trình hiện tại, không thể ghép lại cùng tuyến`, 'error');
+        return false;
+      }
+
+      const missingDestination = handoffCandidates.filter((spec) => !getStationById(spec.destinationStationId));
+      if (missingDestination.length > 0) {
+        addLog(`Không thể xác nhận: ${missingDestination.length} mẫu mới chưa có trạm đích`, 'error');
+        return false;
+      }
+
+      const sameStationDestination = handoffCandidates.filter((spec) => spec.destinationStationId === stationId);
+      if (sameStationDestination.length > 0) {
+        addLog(`Không thể gửi ${sameStationDestination.length} mẫu mới về chính trạm hiện tại`, 'error');
+        return false;
+      }
+    }
+
+    const handoffSpecimens = handoffCandidates.map((specimen) => ({
+      ...specimen,
+      fromStationId: stationId,
+      fromStationName: stop.stationName || getStationById(stationId)?.name || stationId,
+      handoffAt: new Date().toISOString(),
+    }));
+
+    const confirmedAt = new Date().toISOString();
+    const confirmedStop = {
+      ...stop,
+      status: ROUTE_STOP_STATUS.CONFIRMED,
+      confirmedAt,
+    };
+
+    const confirmedRoute = {
+      ...route,
+      specimenRecords: [
+        ...(Array.isArray(route.specimenRecords) ? route.specimenRecords : []),
+        ...handoffSpecimens,
+      ],
+      updatedAt: Date.now(),
+      stops: route.stops.map((item, index) => (index === stopIndex ? confirmedStop : item)),
+    };
+
+    persistRouteStopDelivery(confirmedRoute, confirmedStop, confirmedAt);
+
+    if (handoffSpecimens.length > 0) {
+      scanListRef.current = [];
+      setScanList([]);
+      setCurrentSpecimen(null);
+      addLog(`[ROUTE] Đã ghép ${handoffSpecimens.length} mẫu mới tại ${confirmedStop.stationName} vào tuyến hiện tại`, 'success');
+    }
+
+    const nextStopIndex = stopIndex + 1;
+    const remainingStationIds = confirmedRoute.stops
+      .slice(nextStopIndex)
+      .filter((item) => item.status !== ROUTE_STOP_STATUS.CONFIRMED)
+      .map((item) => item.stationId);
+    const handoffDestinationIds = handoffSpecimens.map((specimen) => specimen.destinationStationId);
+    const futureStationIds = [...new Set([...remainingStationIds, ...handoffDestinationIds])]
+      .filter((futureStationId) => futureStationId && futureStationId !== stationId);
+    const orderedFutureStations = orderDispatchDestinations(
+      stationId,
+      futureStationIds,
+      confirmedRoute.priorityStationId
+    );
+
+    if (orderedFutureStations.length === 0) {
+      addLog(`[ROUTE] Hoàn tất lộ trình từ ${confirmedRoute.originStationName}`, 'success');
+      setActiveDispatchRoute(null);
+      syncDirectionRef(DIRECTION.IDLE);
+      publishSyncSnapshot(buildSyncSnapshot({
+        activeDispatchRoute: null,
+        cabinDirection: DIRECTION.IDLE,
+      }));
+      setTimeout(() => {
+        processQueueRef.current?.(robotStateRef.current.index);
+      }, 0);
+      return true;
+    }
+
+    const confirmedStops = confirmedRoute.stops.slice(0, nextStopIndex);
+    const nextStops = orderedFutureStations.map((station, index) => {
+      const stopSpecimens = confirmedRoute.specimenRecords.filter((spec) => spec.destinationStationId === station.id);
+      return {
+        stationId: station.id,
+        stationName: station.name,
+        specimenCount: stopSpecimens.length,
+        specimenBarcodes: stopSpecimens.map((spec) => spec.barcode),
+        status: index === 0 ? ROUTE_STOP_STATUS.MOVING : ROUTE_STOP_STATUS.PENDING,
+        fromStationId: index === 0 ? stationId : orderedFutureStations[index - 1]?.id,
+      };
+    });
+
+    const movingRoute = {
+      ...confirmedRoute,
+      status: ROUTE_STATUS.MOVING,
+      currentStopIndex: confirmedStops.length,
+      stops: [...confirmedStops, ...nextStops],
+    };
+
+    setActiveDispatchRoute(movingRoute);
+    enqueueRouteStop(movingRoute, nextStopIndex);
+    publishSyncSnapshot(buildSyncSnapshot({ activeDispatchRoute: movingRoute }));
+    setTimeout(() => {
+      processQueueRef.current?.(robotStateRef.current.index);
+    }, 0);
+    return true;
+  }, [addLog, buildSyncSnapshot, currentUser, enqueueRouteStop, persistRouteStopDelivery, publishSyncSnapshot, setActiveDispatchRoute, syncDirectionRef]);
+
+  useEffect(() => {
+    if (!activeDispatchRoute || activeDispatchRoute.status !== ROUTE_STATUS.MOVING) return;
+    if (animating || robotState.status === ROBOT_STATUS.MOVING) return;
+
+    const stopIndex = activeDispatchRoute.currentStopIndex;
+    const stop = activeDispatchRoute.stops?.[stopIndex];
+    const targetStation = getStationById(stop?.stationId);
+    if (!stop || !targetStation) return;
+    if (stop.status === ROUTE_STOP_STATUS.WAITING_CONFIRM || stop.status === ROUTE_STOP_STATUS.CONFIRMED) return;
+    if (robotState.index !== targetStation.idx) return;
+
+    markRouteStopArrived(
+      {
+        routeId: activeDispatchRoute.id,
+        stopIndex,
+        fromStationId: stop.fromStationId || (
+          stopIndex === 0
+            ? activeDispatchRoute.originStationId
+            : activeDispatchRoute.stops?.[stopIndex - 1]?.stationId
+        ),
+      },
+      targetStation,
+      new Date().toISOString()
+    );
+  }, [activeDispatchRoute, animating, markRouteStopArrived, robotState.index, robotState.status]);
+
   // === Robot movement executor (internal — called by queue processor) ===
   const executeRobotMove = useCallback((action, stationId, metadata = null) => {
     if (maintenanceRef.current.enabled) {
@@ -877,6 +1516,10 @@ export default function useScada() {
 
     if (fromIndex === toIndex) {
       addLog(`${target.name} - Robot đã tại vị trí`, 'info');
+      if (metadata?.routeDelivery) {
+        markRouteStopArrived(metadata, target, new Date().toISOString());
+        return true;
+      }
       // Avoid synchronous recursion when many queued tasks target the current station.
       if (processQueueRef.current) {
         setTimeout(() => {
@@ -893,40 +1536,36 @@ export default function useScada() {
     const totalLength = sampleData.total || computePolylineLength(orderedPoints);
     const durationSec = Math.max(MIN_MOVE_DURATION_SEC, totalLength / SPEED_PX_PER_SEC);
 
-    const priorityLabel = metadata?.specimenRecord?.priority === PRIORITY.STAT ? ' [STAT]' : '';
+    const priorityLabel = metadata?.isPriorityStop ? ' [ƯU TIÊN TRẠM]' : '';
 
-    stopAnimation();
-    setMoveId(id => id + 1);
-    setAnimating(true);
-    setRobotState(prev => ({ ...prev, status: ROBOT_STATUS.MOVING, targetId: stationId }));
-    addLog(`Lệnh [${action}]${priorityLabel} -> ${target.name}`);
     const fromPoint = RAIL_POINTS[fromIndex];
 
     // Extract station number safely and use padStart for 10+ station support
     const plcStationNumber = parseInt(target.id.split('-')[1], 10);
-    const isStat = metadata?.specimenRecord?.priority === PRIORITY.STAT;
+    const isStat = Boolean(metadata?.isPriorityStop);
 
-    opc.callCabin(plcStationNumber, isStat, target.id, action).then((res) => {
-      if (!res?.ok) {
-        addLog(`Lỗi gửi lệnh di chuyển tới ${target.name}: ${res?.error || 'Unknown'}`, 'error');
-      }
-    }).catch((err) => {
-      addLog(`[PLC] callCabin lỗi kết nối: ${err?.message || 'Unknown'}`, 'error');
-    });
+    const sendPlcMoveCommand = () => opc.callCabin(plcStationNumber, isStat, target.id, action);
 
-    addLog(
-      `[ROBOT_STATE] status=MOVING index=${fromIndex} target=${stationId} x=${Math.round(fromPoint.x)} y=${Math.round(fromPoint.y)}`,
-      'state'
-    );
-    publishSyncSnapshot(buildSyncSnapshot({
-      status: ROBOT_STATUS.MOVING,
-      index: fromIndex,
-      targetId: stationId,
-      x: fromPoint.x,
-      y: fromPoint.y,
-    }));
+    const runMovement = () => {
+      stopAnimation();
+      setMoveId(id => id + 1);
+      setAnimating(true);
+      setRobotState(prev => ({ ...prev, status: ROBOT_STATUS.MOVING, targetId: stationId }));
+      addLog(`Lệnh [${action}]${priorityLabel} -> ${target.name}`);
 
-    animatePoints(sampleData, durationSec, () => {
+      addLog(
+        `[ROBOT_STATE] status=MOVING index=${fromIndex} target=${stationId} x=${Math.round(fromPoint.x)} y=${Math.round(fromPoint.y)}`,
+        'state'
+      );
+      publishSyncSnapshot(buildSyncSnapshot({
+        status: ROBOT_STATUS.MOVING,
+        index: fromIndex,
+        targetId: stationId,
+        x: fromPoint.x,
+        y: fromPoint.y,
+      }));
+
+      animatePoints(sampleData, durationSec, () => {
       const lastPoint = orderedPoints[orderedPoints.length - 1];
       const finalAngle = getFinalAngle(sampleData.points);
       const arrivedTime = new Date().toISOString();
@@ -957,6 +1596,11 @@ export default function useScada() {
         x: lastPoint.x,
         y: lastPoint.y,
       }));
+
+      if (metadata?.routeDelivery) {
+        markRouteStopArrived(metadata, target, arrivedTime);
+        return;
+      }
 
       if (metadata?.specimenRecord) {
         // Batch dispatch: handle multiple specimens
@@ -1045,9 +1689,34 @@ export default function useScada() {
 
       // ── Queue integration: auto-process next task after arrival ──
       if (processQueueRef.current) processQueueRef.current(toIndex);
+      });
+    };
+
+    if (SIMULATION_MODE) {
+      sendPlcMoveCommand().then((res) => {
+        if (!res?.ok) {
+          addLog(`[SIM] PLC chưa xác nhận lệnh tới ${target.name}: ${res?.error || 'Unknown'}`, 'error');
+        }
+      }).catch((err) => {
+        addLog(`[SIM] PLC chưa kết nối: ${err?.message || 'Unknown'}`, 'error');
+      });
+      runMovement();
+      return true;
+    }
+
+    sendPlcMoveCommand().then((res) => {
+      if (!res?.ok) {
+        addLog(`Lỗi gửi lệnh di chuyển tới ${target.name}: ${res?.error || 'Unknown'}`, 'error');
+        syncDirectionRef(DIRECTION.IDLE);
+        return;
+      }
+      runMovement();
+    }).catch((err) => {
+      addLog(`[PLC] callCabin lỗi kết nối: ${err?.message || 'Unknown'}`, 'error');
+      syncDirectionRef(DIRECTION.IDLE);
     });
     return true;
-  }, [addLog, animatePoints, apiRequest, buildSyncSnapshot, publishSyncSnapshot, stopAnimation, opc]);
+  }, [addLog, animatePoints, apiRequest, buildSyncSnapshot, markRouteStopArrived, publishSyncSnapshot, stopAnimation, syncDirectionRef, opc]);
 
   // === Queue processor: dequeue and execute next task ===
   const processNextQueueTask = useCallback((currentStationIndex) => {
@@ -1064,10 +1733,15 @@ export default function useScada() {
     }
 
     const stationName = STATIONS.find(s => s.id === nextTask.stationId)?.name || nextTask.stationId;
-    const priorityTag = nextTask.priority === PRIORITY.STAT ? '[STAT] ' : '';
+    const priorityTag = nextTask.metadata?.isPriorityStop
+      || nextTask.priority === QUEUE_PRIORITY.STATION
+      ? '[ƯU TIÊN TRẠM] '
+      : nextTask.priority === QUEUE_PRIORITY.SPECIMEN
+        ? '[ƯU TIÊN] '
+        : '';
     addLog(
       `[QUEUE] ${priorityTag}Đang xử lý task: [${nextTask.type}] -> ${stationName} (còn ${queueRef.current.length} task trong hàng chờ)`,
-      nextTask.priority === PRIORITY.STAT ? 'error' : 'info'
+      'info'
     );
 
     executeRobotMove(nextTask.type, nextTask.stationId, nextTask.metadata);
@@ -1078,7 +1752,7 @@ export default function useScada() {
     processQueueRef.current = processNextQueueTask;
   }, [processNextQueueTask]);
 
-  // === Trigger queue processing when a STAT task is enqueued while IDLE ===
+  // === Trigger queue processing when a new task is enqueued while IDLE ===
   // === Helper: publish queue-only sync to other tabs ===
   const publishQueueSync = useCallback(() => {
     publishSyncSnapshot(buildSyncSnapshot());
@@ -1106,12 +1780,12 @@ export default function useScada() {
 
     const station = STATIONS.find(s => s.id === stationId);
     const stationName = station?.name || stationId;
-    const priorityTag = priority === PRIORITY.STAT ? '[STAT] ' : '';
+    const priorityTag = priority === PRIORITY.STAT ? '[ƯU TIÊN] ' : '';
 
     enqueue(stationId, 'CALL', priority, null);
     addLog(
       `[QUEUE] ${priorityTag}Đã thêm lệnh CALL -> ${stationName} vào hàng chờ (vị trí #${queueRef.current.length})`,
-      priority === PRIORITY.STAT ? 'error' : 'info'
+      'info'
     );
 
     // Sync queue to other tabs
@@ -1130,12 +1804,12 @@ export default function useScada() {
 
     const station = STATIONS.find(s => s.id === stationId);
     const stationName = station?.name || stationId;
-    const priorityTag = priority === PRIORITY.STAT ? '[STAT] ' : '';
+    const priorityTag = priority === PRIORITY.STAT ? '[ƯU TIÊN] ' : '';
 
     enqueue(stationId, 'DISPATCH', priority, null);
     addLog(
       `[QUEUE] ${priorityTag}Đã thêm lệnh DISPATCH -> ${stationName} vào hàng chờ (vị trí #${queueRef.current.length})`,
-      priority === PRIORITY.STAT ? 'error' : 'info'
+      'info'
     );
 
     publishQueueSync();
@@ -1159,18 +1833,17 @@ export default function useScada() {
     }
 
     const dispatchTime = new Date().toISOString();
-    const priority = specimenRecord.priority || PRIORITY.ROUTINE;
     const station = STATIONS.find(s => s.id === stationId);
     const stationName = station?.name || stationId;
-    const priorityTag = priority === PRIORITY.STAT ? '[STAT] ' : '';
 
-    enqueue(stationId, 'DISPATCH', priority, { specimenRecord, dispatchTime });
+    enqueue(stationId, 'DISPATCH', PRIORITY.ROUTINE, { specimenRecord, dispatchTime });
     addLog(
-      `[QUEUE] ${priorityTag}Đã thêm lệnh DISPATCH mẫu ${specimenRecord.barcode} -> ${stationName} vào hàng chờ`,
-      priority === PRIORITY.STAT ? 'error' : 'info'
+      `[QUEUE] Đã thêm lệnh DISPATCH mẫu ${specimenRecord.barcode} -> ${stationName} vào hàng chờ`,
+      'info'
     );
 
     setCurrentSpecimen(null);
+    scanListRef.current = [];
     setScanList([]);
     publishQueueSync();
     triggerQueueIfIdle();
@@ -1191,12 +1864,8 @@ export default function useScada() {
     }
 
     const dispatchTime = new Date().toISOString();
-    // Use highest priority from the batch
-    const hasSTAT = specimens.some((s) => s.priority === PRIORITY.STAT);
-    const priority = hasSTAT ? PRIORITY.STAT : PRIORITY.ROUTINE;
     const station = STATIONS.find((s) => s.id === stationId);
     const stationName = station?.name || stationId;
-    const priorityTag = hasSTAT ? '[STAT] ' : '';
 
     // Create a combined metadata for the batch
     const batchMetadata = {
@@ -1207,13 +1876,14 @@ export default function useScada() {
       batchCount: specimens.length,
     };
 
-    enqueue(stationId, 'DISPATCH', priority, batchMetadata);
+    enqueue(stationId, 'DISPATCH', PRIORITY.ROUTINE, batchMetadata);
     addLog(
-      `[QUEUE] ${priorityTag}Đã thêm lệnh DISPATCH ${specimens.length} mẫu -> ${stationName}`,
-      hasSTAT ? 'error' : 'info'
+      `[QUEUE] Đã thêm lệnh DISPATCH ${specimens.length} mẫu -> ${stationName}`,
+      'info'
     );
 
     // Clear scan list and current specimen
+    scanListRef.current = [];
     setScanList([]);
     setCurrentSpecimen(null);
 
@@ -1237,10 +1907,15 @@ export default function useScada() {
 
     // Clear the queue on E-STOP to prevent stale tasks from running after recovery
     const droppedCount = queueRef.current.length;
+    const hadActiveRoute = Boolean(activeDispatchRouteRef.current);
+    setActiveDispatchRoute(null);
     clearQueue();
     addLog('E-STOP được kích hoạt!', 'error');
     if (droppedCount > 0) {
       addLog(`[QUEUE] Đã hủy ${droppedCount} task trong hàng chờ do E-STOP`, 'error');
+    }
+    if (hadActiveRoute) {
+      addLog('[ROUTE] Đã hủy lộ trình đang chạy do E-STOP', 'error');
     }
     addLog(
       `[ROBOT_STATE] status=ESTOP index=${robotStateRef.current.index} target=${robotStateRef.current.targetId} x=${Math.round(robotStateRef.current.x)} y=${Math.round(robotStateRef.current.y)}`,
@@ -1254,10 +1929,16 @@ export default function useScada() {
       y: robotStateRef.current.y,
       queue: [],
       cabinDirection: DIRECTION.IDLE,
+      activeDispatchRoute: null,
     }));
-  }, [addLog, buildSyncSnapshot, clearQueue, publishSyncSnapshot, stopAnimation, queueRef, opc]);
+  }, [addLog, buildSyncSnapshot, clearQueue, publishSyncSnapshot, setActiveDispatchRoute, stopAnimation, queueRef, opc]);
 
   const acknowledgeTask = useCallback(() => {
+    if (currentUser?.role !== USER_ROLES.TECH) {
+      addLog('Chỉ kỹ thuật viên được nhả E-Stop và reset lỗi hệ thống', 'error');
+      return;
+    }
+
     // FIX: Restore UI state IMMEDIATELY — don't block behind PLC socket timeouts.
     // Previously, two sequential `await opc.*()` calls (each with 5s timeout) plus
     // a 500ms setTimeout caused a ~10.5s delay before the UI recovered.
@@ -1295,7 +1976,7 @@ export default function useScada() {
         addLog(`Cảnh báo PLC: ${err?.message || 'Không kết nối được'}`, 'error');
       });
     }, 300);
-  }, [addLog, buildSyncSnapshot, publishSyncSnapshot, opc]);
+  }, [addLog, buildSyncSnapshot, currentUser, publishSyncSnapshot, opc]);
 
   // === Cleanup ===
   useEffect(() => {
@@ -1424,6 +2105,20 @@ export default function useScada() {
     };
   }, [isAuthenticated, applySyncSnapshot, shouldApplySyncPayload, debouncedHydrate, opc]);
 
+  useEffect(() => {
+    if (!isAuthenticated || authReconnectDoneRef.current || typeof socketReconnect !== 'function') {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => {
+      if (authReconnectDoneRef.current) return;
+      authReconnectDoneRef.current = true;
+      socketReconnect();
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [isAuthenticated, socketReconnect]);
+
   // Keep tabs synced instantly in the same browser session.
   useEffect(() => {
     if (!isAuthenticated || typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') {
@@ -1501,9 +2196,11 @@ export default function useScada() {
     scannedSpecimens,
     transportedSpecimens,
     maintenanceMode,
+    activeDispatchRoute,
     registerScannedSpecimen,
     lookupBarcode,
     removeFromScanList,
+    updateScanListDestination,
     clearScanList,
     clearCurrentSpecimen,
     setMaintenanceState,
@@ -1513,6 +2210,9 @@ export default function useScada() {
     dispatchRobot,
     dispatchScannedSpecimen,
     dispatchBatchSpecimens,
+    previewDispatchRoute,
+    startDispatchRoute,
+    confirmRouteStop,
     emergencyStop,
     acknowledgeTask,
     // Queue management
@@ -1523,6 +2223,9 @@ export default function useScada() {
     // Socket access
     getSocket: opc.getSocket,
     reconnectSocket: opc.reconnectSocket,
+    // ESP32 Cabin Sensor
+    cabinSensorData,
+    sensorHistory,
   }), [
     isAuthenticated,
     currentUser,
@@ -1544,9 +2247,11 @@ export default function useScada() {
     scannedSpecimens,
     transportedSpecimens,
     maintenanceMode,
+    activeDispatchRoute,
     registerScannedSpecimen,
     lookupBarcode,
     removeFromScanList,
+    updateScanListDestination,
     clearScanList,
     clearCurrentSpecimen,
     setMaintenanceState,
@@ -1555,6 +2260,9 @@ export default function useScada() {
     dispatchRobot,
     dispatchScannedSpecimen,
     dispatchBatchSpecimens,
+    previewDispatchRoute,
+    startDispatchRoute,
+    confirmRouteStop,
     emergencyStop,
     acknowledgeTask,
     queue,
@@ -1563,5 +2271,7 @@ export default function useScada() {
     clearQueue,
     opc.getSocket,
     opc.reconnectSocket,
+    cabinSensorData,
+    sensorHistory,
   ]);
 }

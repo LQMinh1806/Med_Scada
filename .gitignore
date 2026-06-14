@@ -31,3 +31,4 @@ lint_output.txt
 # Environment
 .env
 !.env.example
+

@@ -48,6 +48,9 @@ export default function useOpcUaSocket() {
   // useScada attaches its handler functions here so the socket can invoke them
   const onStateSyncRef = useRef(null);
   const onDataSyncRef = useRef(null);
+  const onCabinSensorRef = useRef(null); // ESP32 cabin sensor data
+  const pendingStateSyncRef = useRef(null);
+  const pendingDataSyncRef = useRef(null);
 
   // ── PLC state — updated by server-pushed events ────────────────────────
   const [plcState, setPlcState] = useState({
@@ -157,12 +160,23 @@ export default function useOpcUaSocket() {
     socket.on('scada:stateSync', (data) => {
       if (onStateSyncRef.current) {
         onStateSyncRef.current(data);
+      } else {
+        pendingStateSyncRef.current = data;
       }
     });
 
     socket.on('scada:dataSync', (data) => {
       if (onDataSyncRef.current) {
         onDataSyncRef.current(data);
+      } else {
+        pendingDataSyncRef.current = data;
+      }
+    });
+
+    // ── ESP32 Cabin Sensor data ──────────────────────────────────────────
+    socket.on('sensor:cabinData', (data) => {
+      if (onCabinSensorRef.current) {
+        onCabinSensorRef.current(data);
       }
     });
 
@@ -269,10 +283,32 @@ export default function useOpcUaSocket() {
 
   const setOnStateSync = useCallback((cb) => {
     onStateSyncRef.current = cb;
+    if (!cb) {
+      pendingStateSyncRef.current = null;
+      return;
+    }
+    if (pendingStateSyncRef.current) {
+      const pending = pendingStateSyncRef.current;
+      pendingStateSyncRef.current = null;
+      cb(pending);
+    }
   }, []);
 
   const setOnDataSync = useCallback((cb) => {
     onDataSyncRef.current = cb;
+    if (!cb) {
+      pendingDataSyncRef.current = null;
+      return;
+    }
+    if (pendingDataSyncRef.current) {
+      const pending = pendingDataSyncRef.current;
+      pendingDataSyncRef.current = null;
+      cb(pending);
+    }
+  }, []);
+
+  const setOnCabinSensor = useCallback((cb) => {
+    onCabinSensorRef.current = cb;
   }, []);
 
   /**
@@ -323,7 +359,10 @@ export default function useOpcUaSocket() {
       setOnDataSync,
       reconnectSocket,
       getSocket,
+      // ESP32 Cabin Sensor
+      onCabinSensorRef,
+      setOnCabinSensor,
     }),
-    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket],
+    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
   );
 }

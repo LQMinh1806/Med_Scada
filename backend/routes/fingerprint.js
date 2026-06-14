@@ -26,7 +26,8 @@ export default function createFingerprintRoutes(prisma, io) {
         return res.json({ mode: 'enroll', userId: session.userId, slotId: session.userId });
       }
     }
-    return res.json({ mode: 'match' });
+    const activeSession = getActiveFingerprintLoginSocketId() !== null;
+    return res.json({ mode: 'match', activeSession });
   });
 
   // ── POST /api/fingerprint/match ────────────────────────────────────────

@@ -25,6 +25,7 @@ import {
 // ESP8266 nhận packet và poll server ngay lập tức (< 5ms trên LAN).
 const UDP_TRIGGER_PORT = 3031;
 const UDP_TRIGGER_MSG  = 'MEDSCADA_LOGIN_TRIGGER';
+let latestScadaStatePayload = null;
 
 function sendUdpLoginTrigger() {
   const client = dgram.createSocket('udp4');
@@ -93,6 +94,13 @@ export function registerSocketHandlers(io) {
 
     // Push latest PLC snapshot to newly connected client
     emitSnapshotToSocket(socket);
+    if (socket.data.user?.sub && latestScadaStatePayload) {
+      socket.emit('scada:stateSync', {
+        ...latestScadaStatePayload,
+        _replayed: true,
+        _ts: Date.now(),
+      });
+    }
 
     // ── Cross-device state synchronization ────────────────────────────
     // SECURITY: Only authenticated sockets can broadcast state —
@@ -103,11 +111,13 @@ export function registerSocketHandlers(io) {
         console.warn(`[Socket.io] BLOCKED unauthenticated stateSync from ${socket.id}`);
         return;
       }
-      socket.broadcast.emit('scada:stateSync', {
+      const payload = {
         ...data,
         _sourceSocketId: socket.id,
         _ts: Date.now(),
-      });
+      };
+      latestScadaStatePayload = payload;
+      socket.broadcast.emit('scada:stateSync', payload);
     });
 
     socket.on('scada:dataSync', (data) => {
@@ -164,6 +174,7 @@ export function registerSocketHandlers(io) {
       if (!ensureSocketPermission(ack)) return;
       try {
         const active = Boolean(data?.active);
+        if (!active && !ensureSocketPermission(ack, 'tech')) return;
         await setEStop(active);
         console.log(`[Socket.io] plc:eStop ${active ? 'ENGAGED' : 'RELEASED'} by ${socket.data.user?.username || socket.id}`);
         if (typeof ack === 'function') ack({ ok: true });
@@ -174,7 +185,7 @@ export function registerSocketHandlers(io) {
     });
 
     socket.on('plc:reset', async (_data, ack) => {
-      if (!ensureSocketPermission(ack)) return;
+      if (!ensureSocketPermission(ack, 'tech')) return;
       try {
         await resetError();
         if (typeof ack === 'function') ack({ ok: true });

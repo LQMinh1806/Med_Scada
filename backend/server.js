@@ -36,6 +36,7 @@ import createUserRoutes from './routes/users.js';
 import createDataRoutes from './routes/data.js';
 import createFingerprintRoutes from './routes/fingerprint.js';
 import createSpecimenRoutes from './routes/specimens.js';
+import createSensorRoutes from './routes/sensors.js';
 
 // ── Initialize core services ─────────────────────────────────────────────────
 const { PrismaClient } = prismaPkg;
@@ -97,6 +98,7 @@ app.use('/api/users', createUserRoutes(prisma));
 app.use('/api/fingerprint', createFingerprintRoutes(prisma, io));
 // Data routes are mounted at /api directly (health, events, bootstrap, etc.)
 app.use('/api/specimens', createSpecimenRoutes(prisma));
+app.use('/api/sensors', createSensorRoutes(io));
 app.use('/api', dataRoutes);
 
 // ── SPA catch-all ────────────────────────────────────────────────────────────

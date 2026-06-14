@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -19,11 +18,6 @@ import {
 } from '@mui/material';
 import { FileDownload } from '@mui/icons-material';
 import * as XLSX from 'xlsx';
-import { PRIORITY } from '../constants';
-
-function buildPriorityLabel(priority) {
-  return priority === PRIORITY.STAT ? 'STAT' : 'Routine';
-}
 
 const TransportHistoryDialog = memo(function TransportHistoryDialog({
   open,
@@ -45,13 +39,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
 
   const hasRecords = records && records.length > 0;
 
-  const statCount = useMemo(
-    () => (records || []).filter((r) => r.priority === PRIORITY.STAT).length,
-    [records]
-  );
-
-  const routineCount = (records?.length || 0) - statCount;
-
   const paginatedRecords = useMemo(() => {
     if (!records) return [];
     return records.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
@@ -68,7 +55,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
       'Barcode',
       'Bệnh nhân',
       'Xét nghiệm',
-      'Ưu tiên',
       'Quét',
       'Dispatch',
       'Đến nơi',
@@ -82,7 +68,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
       record.barcode,
       record.patientName,
       record.testType,
-      buildPriorityLabel(record.priority),
       record.scanTime,
       record.dispatchTime,
       record.arrivalTime,
@@ -95,8 +80,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
       ['BÁO CÁO LỊCH SỬ VẬN CHUYỂN MẪU BỆNH PHẨM'],
       ['Thời gian xuất', generatedAtString],
       ['Tổng lượt vận chuyển', records.length],
-      ['Mẫu STAT', statCount],
-      ['Mẫu Routine', routineCount],
       [],
       headerRow,
       ...dataRows,
@@ -106,7 +89,7 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'BaoCaoVanChuyen');
     XLSX.writeFile(workbook, `bao-cao-van-chuyen-${reportDate}.xlsx`);
-  }, [hasRecords, records, routineCount, statCount]);
+  }, [hasRecords, records]);
 
   return (
     <Dialog
@@ -118,18 +101,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         {title}
-        {statCount > 0 && (
-          <Chip
-            label={`${statCount} STAT`}
-            size="small"
-            sx={{
-              bgcolor: '#FF4D6A',
-              color: '#fff',
-              fontWeight: 800,
-              fontSize: '0.7rem',
-            }}
-          />
-        )}
       </DialogTitle>
 
       <DialogContent dividers>
@@ -141,9 +112,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
           <>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
               Tổng số lượt vận chuyển: <strong>{records.length}</strong>
-              {statCount > 0 && (
-                <> — <strong style={{ color: '#FF4D6A' }}>{statCount} mẫu STAT</strong></>
-              )}
             </Typography>
 
             <Box sx={{ overflowX: 'auto' }}>
@@ -153,7 +121,6 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
                     <TableCell>Barcode</TableCell>
                     <TableCell>Bệnh nhân</TableCell>
                     <TableCell>Xét nghiệm</TableCell>
-                    <TableCell>Ưu tiên</TableCell>
                     <TableCell>Quét</TableCell>
                     <TableCell>Dispatch</TableCell>
                     <TableCell>Đến nơi</TableCell>
@@ -163,46 +130,23 @@ const TransportHistoryDialog = memo(function TransportHistoryDialog({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {paginatedRecords.map((record, index) => {
-                    const isStat = record.priority === PRIORITY.STAT;
-                    return (
-                      <TableRow
-                        key={`${record.specimenId}-${index}`}
-                        hover
-                        sx={isStat ? { bgcolor: 'rgba(211, 47, 47, 0.04)' } : undefined}
-                      >
-                        <TableCell>
-                          <Typography
-                            variant="body2"
-                            fontWeight={isStat ? 800 : 600}
-                            sx={isStat ? { color: '#FF4D6A' } : undefined}
-                          >
-                            {record.barcode}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>{record.patientName}</TableCell>
-                        <TableCell>{record.testType}</TableCell>
-                        <TableCell>
-                          <Chip
-                            label={isStat ? 'STAT' : 'Routine'}
-                            size="small"
-                            sx={{
-                              fontWeight: 700,
-                              fontSize: '0.68rem',
-                              bgcolor: isStat ? '#FF4D6A' : '#e0e0e0',
-                              color: isStat ? '#fff' : '#616161',
-                            }}
-                          />
-                        </TableCell>
-                        <TableCell>{record.scanTime}</TableCell>
-                        <TableCell>{record.dispatchTime}</TableCell>
-                        <TableCell>{record.arrivalTime}</TableCell>
-                        <TableCell>{record.fromStationName}</TableCell>
-                        <TableCell>{record.toStationName}</TableCell>
-                        <TableCell>{record.cabinId}</TableCell>
-                      </TableRow>
-                    );
-                  })}
+                  {paginatedRecords.map((record, index) => (
+                    <TableRow key={`${record.specimenId}-${index}`} hover>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={600}>
+                          {record.barcode}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{record.patientName}</TableCell>
+                      <TableCell>{record.testType}</TableCell>
+                      <TableCell>{record.scanTime}</TableCell>
+                      <TableCell>{record.dispatchTime}</TableCell>
+                      <TableCell>{record.arrivalTime}</TableCell>
+                      <TableCell>{record.fromStationName}</TableCell>
+                      <TableCell>{record.toStationName}</TableCell>
+                      <TableCell>{record.cabinId}</TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
               <TablePagination

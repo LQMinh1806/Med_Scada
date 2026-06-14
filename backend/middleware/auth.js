@@ -113,6 +113,7 @@ export function optionalAuth(req, _res, next) {
       sub: payload?.sub,
       username: payload?.username,
       role: String(payload?.role || '').toLowerCase(),
+      stationId: payload?.stationId ?? null,
     };
   } catch {
     req.user = null;

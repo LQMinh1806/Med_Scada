@@ -14,19 +14,19 @@ export const ROUTES = {
 
 // === Rail & Station topology ===
 export const RAIL_POINTS = [
-  { x: 100, y: 250 },
-  { x: 400, y: 100 },
-  { x: 700, y: 250 },
-  { x: 1000, y: 100 },
-  { x: 1200, y: 200 },
-  { x: 1500, y: 100 },
+  { x: 150, y: 100 },   // 0: Trạm Trung Tâm (Đầu đoạn nằm ngang trên cùng)
+  { x: 350, y: 100 },   // 1: Cuối đoạn nằm ngang trên cùng
+  { x: 550, y: 210 },   // 2: Trạm Xét Nghiệm (Đầu đoạn nằm ngang ở giữa)
+  { x: 1050, y: 210 },  // 3: Trạm Vi Sinh (Cuối đoạn nằm ngang ở giữa)
+  { x: 1250, y: 320 },  // 4: Đầu đoạn nằm ngang dưới cùng
+  { x: 1450, y: 320 },  // 5: Trạm PCR (Cuối đoạn nằm ngang dưới cùng)
 ];
 
 export const STATIONS = [
   { id: 'ST-01', name: 'Trung Tâm', idx: 0, samples: 0, ready: true },
-  { id: 'ST-02', name: 'Xét Nghiệm', idx: 2, samples: 3, ready: true },
-  { id: 'ST-03', name: 'Vi Sinh', idx: 3, samples: 2, ready: true },
-  { id: 'ST-04', name: 'PCR', idx: 5, samples: 1, ready: true },
+  { id: 'ST-02', name: 'Xét Nghiệm', idx: 2, samples: 0, ready: true },
+  { id: 'ST-03', name: 'Vi Sinh', idx: 3, samples: 0, ready: true },
+  { id: 'ST-04', name: 'PCR', idx: 5, samples: 0, ready: true },
 ];
 
 // === Default users ===

@@ -1,17 +1,14 @@
 import { memo, useCallback } from 'react';
 import { Box, Button, Paper, Typography, Chip, Tooltip, alpha } from '@mui/material';
-import { Warning, HourglassBottom } from '@mui/icons-material';
-import { PRIORITY } from '../constants';
+import { HourglassBottom, CheckCircle, Star } from '@mui/icons-material';
 
 /**
- * Individual station control card with LED indicator, priority awareness,
+ * Individual station control card with LED indicator, route status,
  * and queue status display.
  *
  * @param {object}  queueInfo           Queue info for this station (null if not queued)
  * @param {number}  queueInfo.position  1-based position in the queue
- * @param {string}  queueInfo.priority  'stat' | 'routine'
  * @param {string}  queueInfo.type      'CALL' | 'DISPATCH'
- * @param {boolean} queueInfo.hasRoutineOnly  True if only ROUTINE tasks are queued
  */
 const StationControlCard = memo(function StationControlCard({
   station,
@@ -20,9 +17,10 @@ const StationControlCard = memo(function StationControlCard({
   onCall,
   onDispatchRequest,
   canDispatch,
-  hasStatSpecimen,
   disableActions = false,
   queueInfo = null,
+  routeStopInfo = null,
+  onConfirmPickup,
   currentUser = null,
 }) {
   const ledColor = isCurrent ? '#0BDF50' : isTarget ? '#1976D2' : '#868685';
@@ -37,24 +35,37 @@ const StationControlCard = memo(function StationControlCard({
 
   const handleCall = useCallback(() => onCall(station.id), [onCall, station.id]);
   const handleDispatch = useCallback(() => onDispatchRequest(station), [onDispatchRequest, station]);
+  const handleConfirmPickup = useCallback(() => {
+    if (onConfirmPickup) onConfirmPickup(station.id);
+  }, [onConfirmPickup, station.id]);
 
   // --- Location-based RBAC logic ---
-  const isOperator = currentUser?.role === 'operator' && currentUser?.stationId;
+  const currentRole = String(currentUser?.role || '').toLowerCase();
+  const isTech = currentRole === 'tech';
+  const isOperator = currentRole === 'operator' && currentUser?.stationId;
   // Operator ONLY allowed to CALL their own station
   const isCallRestricted = isOperator && currentUser.stationId !== station.id;
-  // Operator ONLY allowed to DISPATCH to other stations (cannot dispatch to self)
-  const isDispatchRestricted = isOperator && currentUser.stationId === station.id;
+  // Operator creates a dispatch route only from their assigned/source station
+  const isDispatchRestricted = isOperator && currentUser.stationId !== station.id;
+  const hasStationConfirmPermission = isTech || currentUser?.stationId === station.id;
 
   // --- Queue-aware disable logic ---
   const isCallDisabled = disableActions || Boolean(queueInfo) || isCallRestricted;
+  const isDispatchOriginUnavailable = !isCurrent;
   const isDispatchDisabled =
     !canDispatch ||
     disableActions ||
+    isDispatchOriginUnavailable ||
     isDispatchRestricted ||
-    (queueInfo && !(queueInfo.hasRoutineOnly && hasStatSpecimen));
+    Boolean(queueInfo);
 
   const isQueued = Boolean(queueInfo);
-  const isQueueStat = queueInfo?.priority === PRIORITY.STAT;
+  const canConfirmPickup = Boolean(routeStopInfo?.canConfirm && hasStationConfirmPermission);
+  const confirmTooltip = routeStopInfo?.canConfirm && !hasStationConfirmPermission
+    ? `Chỉ tài khoản được phân quyền ${station.name} mới được xác nhận tại trạm này`
+    : !routeStopInfo?.canConfirm
+      ? 'Chưa đến lượt xác nhận tại trạm này'
+      : '';
 
   return (
     <Paper
@@ -110,36 +121,31 @@ const StationControlCard = memo(function StationControlCard({
               color: 'text.secondary',
             }}
           />
-          {hasStatSpecimen && (
-            <Chip
-              icon={<Warning sx={{ fontSize: '18px !important' }} />}
-              label="STAT"
-              size="medium"
-              sx={{
-                bgcolor: '#C41C1C',
-                color: '#fff',
-                fontWeight: 800,
-                fontSize: '0.8rem',
-              }}
-            />
-          )}
           {/* --- Queue position badge --- */}
           {isQueued && (
             <Chip
               icon={<HourglassBottom sx={{ fontSize: '15px !important' }} />}
               label={`Đang đợi (#${queueInfo.position})`}
               size="medium"
-              color={isQueueStat ? 'error' : 'warning'}
+              color="warning"
               sx={{
                 fontWeight: 700,
                 fontSize: '0.73rem',
                 height: 26,
-                animation: isQueueStat ? 'pulse-queue 1.2s ease-in-out infinite' : 'none',
-                '@keyframes pulse-queue': {
-                  '0%, 100%': { opacity: 1 },
-                  '50%': { opacity: 0.7 },
-                },
               }}
+            />
+          )}
+          {routeStopInfo && (
+            <Chip
+              icon={routeStopInfo.isPriority ? <Star sx={{ fontSize: '15px !important' }} /> : undefined}
+              label={
+                routeStopInfo.canConfirm
+                  ? 'Chờ lấy hàng'
+                  : `Tuyến #${routeStopInfo.position}/${routeStopInfo.total}`
+              }
+              size="medium"
+              color={routeStopInfo.canConfirm ? 'warning' : 'info'}
+              sx={{ fontWeight: 800, fontSize: '0.73rem', height: 26 }}
             />
           )}
         </Box>
@@ -166,12 +172,14 @@ const StationControlCard = memo(function StationControlCard({
         <Tooltip
           title={
             isDispatchRestricted
-              ? 'Bạn không thể dispatch đến trạm của chính mình'
-              : isQueued && !(queueInfo.hasRoutineOnly && hasStatSpecimen)
+              ? 'Bạn chỉ được tạo lộ trình từ trạm được phân công'
+              : isDispatchOriginUnavailable
+                ? 'Cabin phải đang ở trạm này trước khi tạo lộ trình'
+              : isQueued
                 ? 'Trạm đã có lệnh trong hàng chờ'
                 : ''
           }
-          disableHoverListener={!isDispatchRestricted && (!isQueued || (queueInfo?.hasRoutineOnly && hasStatSpecimen))}
+          disableHoverListener={!isDispatchRestricted && !isDispatchOriginUnavailable && !isQueued}
         >
           <span>
             <Button
@@ -182,21 +190,39 @@ const StationControlCard = memo(function StationControlCard({
               onClick={handleDispatch}
               sx={{
                 py: 0.8, fontSize: '0.85rem', fontWeight: 700,
-                ...(hasStatSpecimen && canDispatch && !isDispatchDisabled && {
-                  borderColor: '#1976D2',
-                  color: '#1976D2',
-                  borderWidth: 2,
-                  '&:hover': {
-                    bgcolor: alpha('#1976D2', 0.08),
-                    borderWidth: 2,
-                  },
-                }),
               }}
             >
               ĐIỀU CABIN ĐẾN
             </Button>
           </span>
         </Tooltip>
+        {routeStopInfo && (
+          <Tooltip
+            title={confirmTooltip}
+            disableHoverListener={!confirmTooltip}
+          >
+            <span>
+              <Button
+                variant={canConfirmPickup ? 'contained' : 'outlined'}
+                color={canConfirmPickup ? 'success' : 'inherit'}
+                fullWidth
+                disabled={!canConfirmPickup}
+                onClick={handleConfirmPickup}
+                startIcon={<CheckCircle />}
+                sx={{
+                  py: 0.75,
+                  fontSize: '0.78rem',
+                  fontWeight: 800,
+                  ...(canConfirmPickup && {
+                    boxShadow: `0 8px 18px ${alpha('#0BDF50', 0.25)}`,
+                  }),
+                }}
+              >
+                XÁC NHẬN ĐÃ LẤY HÀNG
+              </Button>
+            </span>
+          </Tooltip>
+        )}
       </Box>
     </Paper>
   );

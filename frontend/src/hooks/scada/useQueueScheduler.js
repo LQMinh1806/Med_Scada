@@ -10,6 +10,16 @@ export const DIRECTION = {
   IDLE: 'IDLE', // Cabin is stationary, no active direction
 };
 
+export const QUEUE_PRIORITY = {
+  ROUTINE: PRIORITY.ROUTINE,
+  SPECIMEN: PRIORITY.STAT,
+  STATION: 'station-priority',
+};
+
+function isHighPriorityTask(priority) {
+  return priority === QUEUE_PRIORITY.SPECIMEN || priority === QUEUE_PRIORITY.STATION;
+}
+
 // =====================================================
 // Generate a lightweight unique ID for queue items
 // =====================================================
@@ -30,7 +40,7 @@ function getStationIndex(stationId) {
 // =====================================================
 // Core scheduling algorithm — 2-layer evaluation
 //
-// Layer 1: STAT priority (absolute, FCFS)
+// Layer 1: explicit priority tasks (absolute, FCFS)
 // Layer 2: LOOK elevator algorithm (ROUTINE)
 // =====================================================
 
@@ -48,14 +58,14 @@ export function evaluateNextTask(currentStationIndex, currentDirection, queue) {
   }
 
   // --------------------------------------------------
-  // Layer 1: STAT — Absolute priority (FCFS ordering)
+  // Layer 1: explicit priority — Absolute priority (FCFS ordering)
   // --------------------------------------------------
-  const statTasks = queue
-    .filter((item) => item.priority === PRIORITY.STAT)
+  const highPriorityTasks = queue
+    .filter((item) => isHighPriorityTask(item.priority))
     .sort((a, b) => a.timestamp - b.timestamp);
 
-  if (statTasks.length > 0) {
-    const chosen = statTasks[0];
+  if (highPriorityTasks.length > 0) {
+    const chosen = highPriorityTasks[0];
     const targetIdx = getStationIndex(chosen.stationId);
     let nextDirection = currentDirection;
     if (targetIdx > currentStationIndex) nextDirection = DIRECTION.UP;
@@ -163,7 +173,7 @@ export function evaluateNextTask(currentStationIndex, currentDirection, queue) {
 // React hook: useQueueScheduler
 //
 // Manages queue state and provides enqueue/dequeue
-// operations along with the LOOK + STAT scheduler.
+// operations along with the LOOK + explicit-priority scheduler.
 // =====================================================
 
 export default function useQueueScheduler() {
@@ -194,7 +204,7 @@ export default function useQueueScheduler() {
         id: generateQueueId(),
         stationId,
         type,       // 'CALL' | 'DISPATCH'
-        priority,   // PRIORITY.STAT | PRIORITY.ROUTINE
+        priority,
         timestamp: Date.now(),
         metadata,
       };
