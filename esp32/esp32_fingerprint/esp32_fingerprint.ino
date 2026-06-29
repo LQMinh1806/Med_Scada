@@ -31,8 +31,8 @@
 const char* WIFI_SSID     = "Quang Sang";
 const char* WIFI_PASSWORD = "0907771191";
 
-// Backend server address (e.g., "http://192.168.1.91:3000" - dùng IP máy tính đang chạy server)
-const char* SERVER_URL    = "http://192.168.1.91:3000"; // Thay 192.168.1.91 bằng IP thực tế của bạn
+// Backend server address (IP tĩnh qua TP-Link router)
+const char* SERVER_URL    = "http://192.168.0.123:3000";
 
 // API key — must match ESP32_API_KEY in backend .env
 const char* API_KEY       = "esp32-fingerprint-secret-change-me";

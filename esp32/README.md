@@ -59,7 +59,7 @@ Chỉnh sửa các hằng số ở đầu file `esp32_fingerprint.ino`:
 ```cpp
 const char* WIFI_SSID     = "TÊN_WIFI";
 const char* WIFI_PASSWORD = "MẬT_KHẨU_WIFI";
-const char* SERVER_URL    = "http://192.168.1.100:3000";  // IP của backend
+const char* SERVER_URL    = "http://192.168.0.123:3000";  // IP tĩnh của backend
 const char* API_KEY       = "esp32-fingerprint-secret-change-me";  // Phải khớp với .env
 ```
 

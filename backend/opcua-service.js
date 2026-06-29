@@ -38,9 +38,6 @@ const RECONNECT_BACKOFF_FACTOR = 1.5;
 // Subscription sampling rate (ms) — how often Kepware is polled for changes
 const SAMPLING_INTERVAL_MS = 500;
 
-// Duration for pulse triggers (Move_Execute, Reset_Cmd): 0 → 1 → 0
-const PULSE_DURATION_MS = 500;
-
 // ── Tag definitions ──────────────────────────────────────────────────────────
 
 /**
@@ -49,20 +46,26 @@ const PULSE_DURATION_MS = 500;
  */
 const READ_TAGS = {
   currentStation: `${TAG_PREFIX}Current_Station`,   // INT  (1–4)
-  robotStatus:    `${TAG_PREFIX}Robot_Status`,       // INT  (0=Ready,1=Running,2=Error)
-  arrivalDone:    `${TAG_PREFIX}Arrival_Done`,       // BOOL
+  robotStatus: `${TAG_PREFIX}Robot_Status`,       // INT  (0=Ready,1=Running,2=Error)
+  cabinReady: `${TAG_PREFIX}Cabin_Ready`,         // BOOL (1=Ready, 0=Busy lifting)
+  // ── E-Stop status from PLC ─────────────────────────────────────────────
+  eStopStatus: `${TAG_PREFIX}E-Stop_CMD`,         // BOOL — TRUE=emergency stop engaged, FALSE=safe (normal operation)
+  // ── Station position sensors (cabin presence at each station) ──────────
+  // Removed physical sensors CB_Tram_1..4. UI will derive from Current_Station instead.
+  // ── Lift sensors ───────────────────────────────────────────────────────
+  // liftHigh1: `${TAG_PREFIX}I1_0`,              // BOOL — lift at high position (pickup)
+  // liftHigh2: `${TAG_PREFIX}I1_1`,              // BOOL — lift at high position (send)
 };
 
 /**
  * WRITE tags — written on-demand when commands arrive from the UI.
  */
 const WRITE_TAGS = {
-  targetStation:    `${TAG_PREFIX}Target_Station`,    // INT  (1–4)
-  moveExecute:      `${TAG_PREFIX}Move_Execute`,      // BOOL (pulse)
-  priorityStat:     `${TAG_PREFIX}Priority_STAT`,     // BOOL
-  eStopCmd:         `${TAG_PREFIX}E_Stop_Cmd`,        // BOOL (maintained)
-  resetCmd:         `${TAG_PREFIX}Reset_Cmd`,         // BOOL (pulse)
-  maintenanceMode:  `${TAG_PREFIX}Maintenance_Mode`,  // BOOL (maintained)
+  targetStation: `${TAG_PREFIX}Target_Station`,    // INT  (1–4)
+  confirmCmd: `${TAG_PREFIX}Confirm_CMD`,         // BOOL (Nút XÁC NHẬN tại trạm: Web writes TRUE, PLC auto-resets)
+  confirmCmd1: `${TAG_PREFIX}Confirm_CMD1`,       // BOOL (Nút TẠO LỘ TRÌNH: Web writes TRUE, PLC auto-resets)
+  confirmCmd2: `${TAG_PREFIX}Confirm_CMD2`,       // BOOL (Nút LẤY HÀNG: Web writes TRUE, PLC auto-resets)
+  maintenanceMode: `${TAG_PREFIX}Maintenance_Mode`,  // BOOL (maintained)
 };
 
 // ── Module state ─────────────────────────────────────────────────────────────
@@ -82,7 +85,9 @@ const pendingClearTags = new Set();
 const latestValues = {
   currentStation: null,
   robotStatus: null,
-  arrivalDone: null,
+  cabinReady: null,
+  // E-Stop status from PLC (TRUE=emergency stop engaged, FALSE=safe)
+  eStopStatus: null,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -102,9 +107,9 @@ function logError(msg, err) {
 function mapRobotStatus(plcValue) {
   if (plcValue === null || plcValue === undefined) return 'Chưa kết nối';
   switch (plcValue) {
-    case 0:  return 'Sẵn sàng';
-    case 1:  return 'Đang di chuyển';
-    case 2:  return 'Dừng khẩn cấp';
+    case 0: return 'Sẵn sàng';
+    case 1: return 'Đang di chuyển';
+    case 2: return 'Dừng khẩn cấp';
     default: return `Không rõ (${plcValue})`;
   }
 }
@@ -168,7 +173,6 @@ async function connectToServer() {
       log('Connection to Kepware lost.');
       latestValues.currentStation = null;
       latestValues.robotStatus = null;
-      latestValues.arrivalDone = null;
       emitConnectionStatus(false);
       scheduleReconnect();
     });
@@ -219,6 +223,8 @@ async function connectToServer() {
         logError(`Failed to clear stuck pulse on ${nodeId} after reconnect`, err);
       }
     }
+
+    // E-Stop_CMD chỉ được đọc từ PLC, Web không ghi đè — bỏ block khởi tạo.
 
     log('Initialisation complete — monitoring PLC tags.');
   } catch (err) {
@@ -338,10 +344,10 @@ async function setupSubscription() {
       const value = dataValue.value?.value;
       const statusCode = dataValue.statusCode?.value;
 
-      // Only process Good quality data
+      // Temporarily process data even if quality is Bad (for debugging)
       if (statusCode !== 0) {
-        logError(`Bad quality on ${key} (statusCode=${statusCode})`);
-        return;
+        logError(`Bad quality on ${key} (statusCode=${statusCode}), but forwarding anyway...`);
+        // return; // Bỏ comment dòng này để chặn data lỗi
       }
 
       // Cache the latest value
@@ -354,6 +360,7 @@ async function setupSubscription() {
             raw: value,
             stationId: mapStationId(value),
           });
+          ioInstance?.emit('plc:stationSensors', buildStationSensors());
           log(`Current_Station → ${value} (${mapStationId(value)})`);
           break;
 
@@ -365,9 +372,27 @@ async function setupSubscription() {
           log(`Robot_Status → ${value} (${mapRobotStatus(value)})`);
           break;
 
-        case 'arrivalDone':
-          ioInstance?.emit('plc:arrivalDone', { value: Boolean(value) });
-          log(`Arrival_Done → ${value}`);
+
+
+        // case 'liftHigh1':
+        // case 'liftHigh2':
+        //   ioInstance?.emit('plc:liftSensors', {
+        //     liftHigh1: Boolean(latestValues.liftHigh1),
+        //     liftHigh2: Boolean(latestValues.liftHigh2),
+        //   });
+        //   log(`${key} → ${value}`);
+        //   break;
+
+        case 'cabinReady':
+          ioInstance?.emit('plc:cabinReady', { ready: Boolean(value), ts: Date.now() });
+          log(`Cabin_Ready → ${value ? 'READY' : 'BUSY'}`);
+          break;
+
+        case 'eStopStatus':
+          // E-Stop_CMD: TRUE=đang dừng khẩn cấp, FALSE=bình thường (an toàn)
+          // Web nhận TRUE → kích hoạt giao diện E-Stop
+          ioInstance?.emit('plc:eStopStatus', { active: Boolean(value), raw: Boolean(value), ts: Date.now() });
+          log(`E-Stop_CMD → ${value ? 'EMERGENCY STOP (TRUE)' : 'SAFE (FALSE)'}`);
           break;
       }
 
@@ -382,13 +407,30 @@ async function setupSubscription() {
 /**
  * Build a consolidated snapshot from the latest cached values.
  */
+/**
+ * Build a station-sensor state object from the latest cached I0.4–I0.7 values.
+ */
+function buildStationSensors() {
+  const st = latestValues.currentStation;
+  return {
+    'ST-01': st === 1,
+    'ST-02': st === 2,
+    'ST-03': st === 3,
+    'ST-04': st === 4,
+  };
+}
+
 function buildSnapshot() {
   return {
     currentStation: latestValues.currentStation,
     stationId: mapStationId(latestValues.currentStation),
     robotStatus: latestValues.robotStatus,
     robotStatusLabel: mapRobotStatus(latestValues.robotStatus),
-    arrivalDone: Boolean(latestValues.arrivalDone),
+    cabinReady: Boolean(latestValues.cabinReady),
+    // E-Stop status từ PLC: TRUE=đang dừng khẩn cấp, FALSE=an toàn (bình thường)
+    eStopActive: Boolean(latestValues.eStopStatus), // active khi PLC gửi TRUE
+    // Station position sensors (I0.4–I0.7)
+    stationSensors: buildStationSensors(),
     ts: Date.now(),
   };
 }
@@ -451,28 +493,8 @@ async function writeTag(nodeId, value, dataType) {
   }
 }
 
-/**
- * Generate a rising-edge pulse: write TRUE, wait PULSE_DURATION_MS, write FALSE.
- * Used for Move_Execute and Reset_Cmd which require a 0 → 1 → 0 transition.
- *
- * @param {string} nodeId Full NodeId string
- * @returns {Promise<void>}
- */
-async function writePulse(nodeId) {
-  try {
-    await writeTag(nodeId, true, DataType.Boolean);
-    await new Promise((resolve) => setTimeout(resolve, PULSE_DURATION_MS));
-  } finally {
-    try {
-      await writeTag(nodeId, false, DataType.Boolean);
-      pendingClearTags.delete(nodeId);
-    } catch (err) {
-      logError(`CRITICAL: Failed to clear pulse on ${nodeId}. PLC might be stuck! Scheduling clear on reconnect.`, err);
-      pendingClearTags.add(nodeId);
-    }
-    log(`PULSE complete on ${nodeId} (${PULSE_DURATION_MS} ms)`);
-  }
-}
+// writePulse removed — spec does not require Move_Execute pulse.
+// PLC starts moving when Target_Station is written.
 
 // ── Public command API (called from server.js Socket.io handlers) ────────────
 
@@ -485,62 +507,106 @@ function enqueueCommand(taskFn) {
   // while the caller's promise reflects the actual success/failure of their command.
   let resolve, reject;
   const callerPromise = new Promise((res, rej) => { resolve = res; reject = rej; });
-  commandQueue = commandQueue.then(() => taskFn().then(resolve, reject)).catch(() => {}); // ensure chain never rejects
+  commandQueue = commandQueue.then(() => taskFn().then(resolve, reject)).catch(() => { }); // ensure chain never rejects
   return callerPromise;
 }
 
 /**
  * Send the cabin to a target station.
  *
- * Sequence:
- *   1. Write Priority_STAT (true/false)
- *   2. Write Target_Station (1–4)
- *   3. Pulse Move_Execute (0 → 1 → 0 over 500 ms)
+ * Per OPC UA spec: PLC starts moving immediately when Target_Station is written.
+ * No pulse trigger needed.
  *
  * @param {number}  stationNumber  PLC station number (1–4)
  * @param {boolean} isStat         True for STAT (urgent) priority
  */
-export function callCabin(stationNumber, isStat = false) {
+export function callCabin(stationNumber, isStat = false, withConfirm = false) {
   return enqueueCommand(async () => {
     if (!Number.isInteger(stationNumber) || stationNumber < 1 || stationNumber > 4) {
       throw new Error(`Invalid stationNumber: ${stationNumber} (must be 1–4)`);
     }
 
-    log(`callCabin → station=${stationNumber}, STAT=${isStat}`);
+    log(`callCabin → Target_Station = ${stationNumber} (STAT=${isStat})`);
+    await writeTag(WRITE_TAGS.targetStation, stationNumber, DataType.UInt16);
 
-    // Step 1 — Set priority flag BEFORE sending target
-    await writeTag(WRITE_TAGS.priorityStat, Boolean(isStat), DataType.Boolean);
-
-    // Step 2 — Set the destination
-    await writeTag(WRITE_TAGS.targetStation, stationNumber, DataType.Int16);
-
-    // Step 3 — Trigger movement (pulse)
-    await writePulse(WRITE_TAGS.moveExecute);
+    if (withConfirm) {
+      log('callCabin → Confirm_CMD1 = TRUE after setting Target_Station');
+      await writeTag(WRITE_TAGS.confirmCmd1, true, DataType.Boolean);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      log('callCabin → Confirm_CMD1 = FALSE (Web auto-reset)');
+      await writeTag(WRITE_TAGS.confirmCmd1, false, DataType.Boolean);
+    }
   });
 }
 
-/**
- * Activate or deactivate the E-Stop command.
- * This is a maintained (latched) signal — the PLC holds the value.
- *
- * @param {boolean} active  True = engage E-Stop, False = release
- */
 export function setEStop(active) {
   return enqueueCommand(async () => {
-    log(`setEStop → ${active}`);
-    await writeTag(WRITE_TAGS.eStopCmd, Boolean(active), DataType.Boolean);
+    // Biến E-Stop chỉ được đọc từ PLC, không cho phép Web ghi đè
+    log(`setEStop → Bỏ qua lệnh ghi (Biến E-Stop_CMD chỉ được đọc từ PLC)`);
   });
 }
 
 /**
- * Send a reset pulse to clear the PLC error state.
- * Generates a 0 → 1 → 0 transition over 500 ms.
+ * Send a reset signal to clear the PLC error state.
+ * Currently a no-op placeholder — spec does not define a reset tag.
  */
 export function resetError() {
   return enqueueCommand(async () => {
-    log('resetError → pulse');
-    await writePulse(WRITE_TAGS.resetCmd);
+    log('resetError → (no PLC reset tag defined in spec)');
   });
+}
+
+/**
+ * Gửi Confirm_CMD = TRUE để xác nhận đã nhận/giao hàng tại trạm (nút XÁC NHẬN).
+ *
+ * Web tự động viết FALSE sau 300ms để tránh kẹt biến.
+ */
+export function confirmStop() {
+  return enqueueCommand(async () => {
+    log('confirmStop → Confirm_CMD = TRUE');
+    await writeTag(WRITE_TAGS.confirmCmd, true, DataType.Boolean);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    log('confirmStop → Confirm_CMD = FALSE (Web auto-reset)');
+    await writeTag(WRITE_TAGS.confirmCmd, false, DataType.Boolean);
+  });
+}
+
+/**
+ * Gửi Confirm_CMD1 = TRUE để kích hoạt lộ trình (nút TẠO LỘ TRÌNH).
+ *
+ * Web tự động viết FALSE sau 300ms để tránh kẹt biến.
+ */
+export function confirmRoute() {
+  return enqueueCommand(async () => {
+    log('confirmRoute → Confirm_CMD1 = TRUE');
+    await writeTag(WRITE_TAGS.confirmCmd1, true, DataType.Boolean);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    log('confirmRoute → Confirm_CMD1 = FALSE (Web auto-reset)');
+    await writeTag(WRITE_TAGS.confirmCmd1, false, DataType.Boolean);
+  });
+}
+
+/**
+ * Gửi Confirm_CMD2 = TRUE để lấy hàng tại trạm hiện tại (nút LẤY HÀNG).
+ *
+ * Web tự động viết FALSE sau 300ms để tránh kẹt biến.
+ */
+export function confirmPickup() {
+  return enqueueCommand(async () => {
+    log('confirmPickup → Confirm_CMD2 = TRUE');
+    await writeTag(WRITE_TAGS.confirmCmd2, true, DataType.Boolean);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    log('confirmPickup → Confirm_CMD2 = FALSE (Web auto-reset)');
+    await writeTag(WRITE_TAGS.confirmCmd2, false, DataType.Boolean);
+  });
+}
+
+/**
+ * @deprecated Dùng confirmRoute() hoặc confirmPickup() thay thế.
+ * Giữ lại để tương thích ngược.
+ */
+export function confirmStation() {
+  return confirmRoute();
 }
 
 /**

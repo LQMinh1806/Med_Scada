@@ -1,6 +1,6 @@
 param(
   [string]$PidFile = '.runtime/browser.pid',
-  [string]$Url = 'http://192.168.1.91:5173/'
+  [string]$Url = 'http://192.168.0.123:5173/'
 )
 
 $ErrorActionPreference = 'SilentlyContinue'

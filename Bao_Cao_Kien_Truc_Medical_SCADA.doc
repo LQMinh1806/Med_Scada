@@ -1,0 +1,111 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+    <meta charset="utf-8">
+    <title>Báo Cáo Kiến Trúc Medical SCADA</title>
+    <style>
+        body { font-family: 'Times New Roman', serif; font-size: 13pt; line-height: 1.5; padding: 20px; }
+        h1 { font-size: 18pt; text-align: center; color: #1f497d; font-weight: bold; margin-bottom: 20px; }
+        h2 { font-size: 16pt; color: #2e74b5; font-weight: bold; margin-top: 20px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        h3 { font-size: 14pt; color: #1f497d; font-weight: bold; margin-top: 15px; }
+        p { margin-bottom: 10px; text-align: justify; }
+        ul, ol { margin-top: 0; margin-bottom: 10px; }
+        li { margin-bottom: 5px; }
+        strong { font-weight: bold; }
+        blockquote { background-color: #f2f2f2; border-left: 5px solid #2e74b5; padding: 10px; margin: 10px 0; font-style: italic; }
+        code { font-family: 'Courier New', monospace; background-color: #f4f4f4; padding: 2px 4px; border-radius: 3px; font-size: 12pt; }
+    </style>
+</head>
+<body>
+    <h1>Báo Cáo Chuyên Sâu Kiến Trúc & Cơ Sở Lý Thuyết<br>Medical SCADA</h1>
+
+    <blockquote>
+        <strong>Lưu ý:</strong> Báo cáo này là phiên bản mở rộng chuyên sâu về kỹ thuật của dự án Medical SCADA. Tài liệu tập trung phân tích mã nguồn thực tế (Node.js, React, Socket.IO, OPC UA), các thuật toán cốt lõi, cơ chế giao tiếp phần cứng và cơ sở lý thuyết được áp dụng, phục vụ trực tiếp cho việc viết báo cáo nghiên cứu khoa học và luận văn tốt nghiệp.
+    </blockquote>
+
+    <h2>1. Cơ Sở Lý Thuyết (Theoretical Foundation)</h2>
+    <p>Dự án được xây dựng dựa trên sự giao thoa giữa mạng máy tính hiện đại và hệ thống điều khiển công nghiệp truyền thống. Các cơ sở lý thuyết chính bao gồm:</p>
+
+    <h3>1.1 Hệ Thống SCADA (Supervisory Control and Data Acquisition)</h3>
+    <ul>
+        <li><strong>Định nghĩa</strong>: Là hệ thống điều khiển giám sát và thu thập dữ liệu, dùng để điều khiển các quy trình công nghiệp và thiết bị phần cứng từ xa.</li>
+        <li><strong>Ứng dụng trong dự án</strong>: Website đóng vai trò là trạm điều khiển HMI (Human-Machine Interface), thu thập thông tin (vị trí encoder, cảm biến DHT11, MPU6050) từ Cabin và điều khiển (gọi Cabin, E-Stop) thông qua PLC.</li>
+    </ul>
+
+    <h3>1.2 Giao Thức OPC UA (Open Platform Communications Unified Architecture)</h3>
+    <ul>
+        <li><strong>Định nghĩa</strong>: Chuẩn giao tiếp công nghiệp độc lập nền tảng, cho phép trao đổi dữ liệu an toàn và tin cậy giữa máy móc (PLC) và hệ thống phần mềm (IT).</li>
+        <li><strong>Ứng dụng</strong>: Là xương sống của dự án để vượt qua rào cản ngôn ngữ giữa môi trường Web (Node.js) và môi trường công nghiệp (Kepware Server / PLC).</li>
+    </ul>
+
+    <h3>1.3 Kiến Trúc Mạng Hướng Sự Kiện (Event-Driven Architecture) với WebSockets</h3>
+    <ul>
+        <li>Thay vì cơ chế Polling (Hỏi - Đáp liên tục) của HTTP gây lãng phí tài nguyên, hệ thống dùng WebSockets (thông qua <code>Socket.IO</code>) để duy trì kết nối TCP 2 chiều liên tục. Máy chủ có khả năng chủ động "đẩy" (Push) sự kiện thay đổi của cảm biến trực tiếp về giao diện ngay tức thì.</li>
+    </ul>
+
+    <h3>1.4 Kiểm Soát Truy Cập Dựa Trên Vai Trò & Vị Trí (Location-based RBAC)</h3>
+    <ul>
+        <li><strong>RBAC (Role-Based Access Control)</strong>: Cấp quyền thao tác (Tech / Operator) được nhúng sâu trong <code>JWT (JSON Web Token)</code>.</li>
+        <li><strong>Location-based</strong>: Token lưu trữ cả thuộc tính <code>stationId</code> của người dùng. Hệ thống tự động từ chối các lệnh gọi Cabin nếu trạm đích không khớp với trạm được gán cho nhân viên y tế đó.</li>
+    </ul>
+
+    <h2>2. Trung Gian Giao Tiếp Phần Cứng (Hardware Intermediary)</h2>
+    <p>Hệ thống sử dụng nhiều lớp trung gian để đảm bảo an toàn, tốc độ và độ tin cậy khi nói chuyện với phần cứng.</p>
+
+    <h3>2.1 Mạng Lưới Công Nghiệp (PLC qua OPC UA Bridge)</h3>
+    <p><em>File cốt lõi: <code>backend/opcua-service.js</code></em></p>
+    <ul>
+        <li><strong>Cơ chế Monitored Items (Đọc)</strong>: Node.js sử dụng thư viện <code>node-opcua</code> để tạo một <code>ClientSubscription</code>. Thay vì dùng vòng lặp hỏi PLC liên tục, hệ thống đăng ký giám sát (Monitor) các Tag (như <code>Current_Station</code>, cảm biến vị trí <code>CB_Tram_1</code>). Kepware sẽ tự động kích hoạt callback <code>.on('changed')</code> đẩy dữ liệu về Node.js khi có thay đổi trạng thái điện áp ở PLC (chu kỳ lấy mẫu <code>SAMPLING_INTERVAL_MS = 500ms</code>).</li>
+        <li><strong>Cơ chế Write & Xung Pulse (Ghi)</strong>: Khi cần điều khiển động cơ, Node.js ghi Tag đích (<code>Target_Station</code> kiểu <code>Int16</code>). Thay vì bật Tag chạy liên tục gây nguy hiểm, hệ thống được thiết kế dùng <strong>Pulse Logic (Xung cạnh lên)</strong>: Ghi <code>TRUE</code> vào Tag <code>Move_Execute</code>, chờ 500ms, sau đó ghi lại <code>FALSE</code>. PLC nhận xung này và tự chốt mạch (latch) để chạy động cơ, đảm bảo an toàn tuyệt đối ngay cả khi mất mạng giữa chừng.</li>
+    </ul>
+
+    <h3>2.2 Mạng Lưới Vi Điều Khiển IoT (ESP8266 & ESP32)</h3>
+    <p>Phần cứng được module hóa độc lập, không kết nối qua dây Serial (COM) tới máy chủ mà dùng Wi-Fi (REST & UDP).</p>
+    <ul>
+        <li><strong>Thiết lập UDP Discovery & Trigger</strong>: Để trải nghiệm quét vân tay mượt mà như dùng điện thoại (Không độ trễ), Server (<code>server.js</code>) thiết lập một cổng UDP (Port 3031). Khi người dùng nhấn nút "Đăng nhập vân tay" trên Web, Server Broadcast gói tin UDP <code>MEDSCADA_LOGIN_TRIGGER</code> ra toàn mạng LAN. ESP8266 nhận được sẽ "thức giấc" và kích hoạt cảm biến R307 lập tức thay vì phải chờ chu kỳ Polling HTTP thông thường.</li>
+        <li><strong>RESTful API</strong>: Cảm biến Cabin (DHT11, MPU6050, Encoder) gửi telemetry về Backend định kỳ qua phương thức HTTP POST vào <code>/api/sensors/cabin</code>.</li>
+    </ul>
+
+    <h2>3. Kiến Trúc Máy Chủ Web (Webserver Component)</h2>
+    <p>Máy chủ tuân theo kiến trúc Node.js/Express kết hợp React SPA (Single Page Application).</p>
+
+    <h3>3.1 Backend (Node.js + Express)</h3>
+    <ul>
+        <li><strong>Middleware Pipeline</strong>: Mã nguồn <code>server.js</code> xử lý chuỗi middleware chặt chẽ:
+            <ol>
+                <li>Kiểm tra CORS (Khóa domain trái phép).</li>
+                <li>Parse JSON body (giới hạn 1MB tránh DOS attack).</li>
+                <li><code>optionalAuth</code>: Bóc tách và xác thực JWT từ Header/Cookie.</li>
+                <li><code>requireCsrf</code>: Chống tấn công giả mạo request liên trang.</li>
+            </ol>
+        </li>
+        <li><strong>Socket.IO Hub (<code>handlers.js</code>)</strong>: Quản lý các kết nối Socket. Nó là bộ phận trực tiếp phân giải lệnh (ví dụ sự kiện <code>plc:callCabin</code>), kiểm tra <code>ensureSocketPermission</code> (Thẩm định RBAC chặn lệnh trái phép) và gọi xuống tầng <code>opcua-service.js</code>.</li>
+    </ul>
+
+    <h3>3.2 Frontend (React + Vite)</h3>
+    <ul>
+        <li><strong>Tư tưởng "Single Source of Truth" (Nguồn chân lý duy nhất)</strong>: Tại <code>useScada.js</code>, toàn bộ trạng thái của Cabin (Vị trí x/y, Hàng đợi lệnh, Trạng thái khẩn cấp) được quản lý tập trung.</li>
+        <li><strong>Cơ chế State Hydration</strong>: Khi một trình duyệt (hoặc 1 tab mới) vừa mở ra, nó gọi API nội bộ kết hợp với Socket sự kiện <code>scada:stateSync</code> để nhận ngay lập tức ảnh chụp (Snapshot) cấu hình hệ thống từ Backend.</li>
+        <li><strong>Inter-tab Synchronization</strong>: Tối ưu hiệu năng bằng cách sử dụng <code>BroadcastChannel</code> của trình duyệt. Nếu mở nhiều Tab trên cùng một máy, các tab sẽ đồng bộ trạng thái mô phỏng đồ hoạ với nhau qua RAM cục bộ mà không cần đi vòng lên Server.</li>
+    </ul>
+
+    <h2>4. Thuật Toán Cốt Lõi (Algorithms)</h2>
+    <p>Dự án sử dụng một cấu trúc Hàng Đợi Ưu Tiên (Priority Queue) tích hợp <strong>Thuật toán phân phối hướng (LOOK Algorithm / Elevator Algorithm)</strong> để điều phối Cabin, thay vì sử dụng cơ chế Nhập trước - Xuất trước (FIFO) thô sơ.</p>
+
+    <h3>4.1 Vấn Đề Cần Giải Quyết</h3>
+    <p>Khi có nhiều phòng ban y tế (ST-01, ST-02, ST-03, ST-04) cùng bấm nút gọi Cabin trong cùng một thời điểm, nếu dùng FIFO, Cabin sẽ chạy zig-zag (VD: Đang ở Trạm 1 -> chạy lên Trạm 4 -> lùi về Trạm 2 -> chạy lên Trạm 3). Việc này gây hao mòn cơ khí và cực kỳ tốn thời gian.</p>
+
+    <h3>4.2 Triển Khai Thuật Toán (Queue Scheduler)</h3>
+    <p>Tương tự thuật toán của ổ cứng từ tính hay thang máy, cơ chế điều phối (Hàm <code>orderDispatchDestinations</code>) hoạt động như sau:</p>
+    <ol>
+        <li><strong>Xác định hướng đi hiện tại</strong>: Cabin lưu trữ một Direction State (Đang đi LÊN hay Đang đi XUỐNG dọc theo chiều dài ray).</li>
+        <li><strong>Gom chuyến (Batching)</strong>: Trên đường đi, nếu có các trạm nằm "cùng chiều" di chuyển, hệ thống nội suy và đẩy lệnh của trạm đó lên thực thi trước, thay vì tuân theo thứ tự thời gian bấm nút.</li>
+        <li><strong>Tính khoảng cách không gian</strong>: Hệ thống sử dụng hàm <code>stationDistance(currentStationId, nextStationId)</code> lấy trị tuyệt đối độ chênh lệch chỉ mục vị trí (<code>idx</code>) để sắp xếp lại hàng đợi theo nguyên tắc ưu tiên trạm gần nhất thuộc cùng một hướng.</li>
+        <li><strong>Cắt ngang ưu tiên tuyệt đối (Bypass/Preemption)</strong>: Trong y tế, mẫu bệnh phẩm cấp cứu (Thuộc tính: <code>STAT Priority</code>) có đặc quyền tối cao. Dù thuật toán Elevator đang chạy mượt, nếu có lệnh STAT, nó lập tức gạt toàn bộ logic tối ưu quãng đường để chèn lệnh STAT lên vị trí Số 1 của Queue.</li>
+    </ol>
+
+    <blockquote>
+        <strong>Kết luận học thuật</strong>: Sự kết hợp giữa thuật toán <strong>Elevator (LOOK)</strong> về mặt không gian vật lý và thuật toán <strong>Priority Queue</strong> về mặt tính chất sự kiện (Routine vs STAT) tạo ra một hệ thống điều phối đa mục tiêu cực kỳ mạnh mẽ, tối ưu cả về chi phí cơ khí lẫn thời gian đáp ứng y tế khẩn cấp.
+    </blockquote>
+
+</body>
+</html>

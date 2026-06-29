@@ -1,5 +1,5 @@
 param(
-  [string]$Url = 'http://192.168.1.91:5173/',
+  [string]$Url = 'http://192.168.0.123:5173/',
   [int]$Port = 5173,
   [int]$TimeoutSeconds = 120,
   [string]$PidFile = '.runtime/browser.pid',

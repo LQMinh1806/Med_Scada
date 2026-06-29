@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState, useRef } from 'react';
 import {
   Alert,
   Box,
@@ -22,6 +22,7 @@ import {
   Star,
   StarBorder,
   AltRoute,
+  PowerOff,
 } from '@mui/icons-material';
 import StationControlCard from './StationControlCard';
 import SpecimenScanPanel from './SpecimenScanPanel';
@@ -46,10 +47,12 @@ const ControlPage = memo(function ControlPage({ scada }) {
     startDispatchRoute,
     activeDispatchRoute,
     confirmRouteStop,
+    confirmPickup,
     emergencyStop,
     maintenanceMode,
     queue,
     acknowledgeTask,
+    plcState,
   } = scada;
 
   const notifications = useNotification();
@@ -61,9 +64,20 @@ const ControlPage = memo(function ControlPage({ scada }) {
     priorityStationId: null,
   });
 
+  const [mergeDialog, setMergeDialog] = useState({
+    open: false,
+    stationId: null,
+    priorityStationId: null,
+  });
+
+  // Trạng thái momentary cho nút xác nhận ghép mẫu
+  const isConfirmingMergeRef = useRef(false);
+  const [isConfirmingMerge, setIsConfirmingMerge] = useState(false);
+
   const missingDestinationCount = scanList.filter((specimen) => !specimen.destinationStationId).length;
   const canDispatch = scanList.length > 0 && missingDestinationCount === 0 && !maintenanceMode.enabled && !activeDispatchRoute;
   const activeRouteStop = activeDispatchRoute?.stops?.[activeDispatchRoute.currentStopIndex] || null;
+  const isEStop = robotState.status === ROBOT_STATUS.ESTOP;
   const canAppendSpecimensAtStop = Boolean(
     activeDispatchRoute?.status === 'waiting_confirm' &&
     activeRouteStop &&
@@ -80,7 +94,11 @@ const ControlPage = memo(function ControlPage({ scada }) {
       counts[stationId] = (counts[stationId] || 0) + count;
     };
 
-    const currentStation = stations.find((station) => station.idx === robotState.index);
+    // Dùng plcState.currentStation để xác định trạm hiện tại chính xác từ PLC
+    const plcStationNum = plcState?.currentStation;
+    const currentStation = plcStationNum != null
+      ? stations.find((s) => parseInt(s.id.split('-')[1], 10) === plcStationNum)
+      : stations.find((station) => station.idx === robotState.index);
     const scanSourceStationId = scada.currentUser?.stationId || currentStation?.id || null;
     addCount(scanSourceStationId, scanList.length);
 
@@ -101,7 +119,7 @@ const ControlPage = memo(function ControlPage({ scada }) {
     }
 
     return counts;
-  }, [activeDispatchRoute, robotState.index, scanList.length, scada.currentUser?.stationId, stations]);
+  }, [activeDispatchRoute, robotState.index, scanList.length, scada.currentUser?.stationId, stations, plcState?.currentStation]);
 
   const handleCall = useCallback(
     (stationId) => {
@@ -169,12 +187,49 @@ const ControlPage = memo(function ControlPage({ scada }) {
   }, [dispatchDialog.originStation, dispatchDialog.priorityStationId, dispatchDialog.selectedStationIds, notifications, scanList.length, startDispatchRoute]);
 
   const handleConfirmPickup = useCallback((stationId) => {
+    // If there are new specimens scanned, open merge dialog to allow priority selection
+    if (scanList.length > 0 && canAppendSpecimensAtStop) {
+      setMergeDialog({
+        open: true,
+        stationId,
+        priorityStationId: null,
+      });
+      return;
+    }
+    // No new specimens — confirm directly without dialog
     const ok = confirmRouteStop(stationId);
     if (ok) {
       const stationName = stations.find((station) => station.id === stationId)?.name || stationId;
-      notifications.notify(`Đã xác nhận lấy hàng tại ${stationName}`, 'success', { duration: 5000 });
+      notifications.notify(`Đã xác nhận gửi hàng tại ${stationName}`, 'success', { duration: 5000 });
     }
-  }, [confirmRouteStop, notifications, stations]);
+  }, [canAppendSpecimensAtStop, confirmRouteStop, notifications, scanList.length, stations]);
+
+  const handleCancelMerge = useCallback(() => {
+    setMergeDialog({ open: false, stationId: null, priorityStationId: null });
+  }, []);
+
+  const handleToggleMergePriority = useCallback((stationId) => {
+    setMergeDialog((prev) => ({
+      ...prev,
+      priorityStationId: prev.priorityStationId === stationId ? null : stationId,
+    }));
+  }, []);
+
+  const handleConfirmMerge = useCallback(() => {
+    if (!mergeDialog.stationId || isConfirmingMergeRef.current) return;
+    isConfirmingMergeRef.current = true;
+    setIsConfirmingMerge(true);
+    const ok = confirmRouteStop(mergeDialog.stationId, mergeDialog.priorityStationId);
+    if (ok) {
+      const stationName = stations.find((station) => station.id === mergeDialog.stationId)?.name || mergeDialog.stationId;
+      notifications.notify(`Đã xác nhận nhận hàng và ghép ${scanList.length} mẫu tại ${stationName}`, 'success', { duration: 6000 });
+    }
+    setMergeDialog({ open: false, stationId: null, priorityStationId: null });
+    setTimeout(() => {
+      isConfirmingMergeRef.current = false;
+      setIsConfirmingMerge(false);
+    }, 2000);
+  }, [confirmRouteStop, mergeDialog.stationId, mergeDialog.priorityStationId, notifications, scanList.length, stations]);
 
 
   const handleEStop = useCallback(() => {
@@ -186,6 +241,21 @@ const ControlPage = memo(function ControlPage({ scada }) {
     acknowledgeTask();
     notifications.notify('Hệ thống đã được khôi phục sau Dừng khẩn cấp', 'success');
   }, [acknowledgeTask, notifications]);
+
+  const handleConfirmStationPickup = useCallback((stationId) => {
+    if (confirmPickup) {
+      confirmPickup().then((res) => {
+        if (res?.ok) {
+          const stationName = stations.find((s) => s.id === stationId)?.name || stationId;
+          notifications.notify(`Đã gửi lệnh GỬI HÀNG tại ${stationName} (Confirm_CMD2)`, 'success', { duration: 4000 });
+        } else {
+          notifications.notify(`Lỗi gửi lệnh GỬI HÀNG: ${res?.error || 'Unknown'}`, 'error');
+        }
+      }).catch((err) => {
+        notifications.notify(`Lệnh GỬI HÀNG lỗi kết nối: ${err?.message}`, 'error');
+      });
+    }
+  }, [confirmPickup, notifications, stations]);
 
   const stationQueueMap = useMemo(() => {
     const map = {};
@@ -221,17 +291,24 @@ const ControlPage = memo(function ControlPage({ scada }) {
 
   const stationViewModels = useMemo(
     () =>
-      stations.map((station) => ({
-        station: {
-          ...station,
-          samples: waitingSpecimenCounts[station.id] || 0,
-        },
-        isCurrent: robotState.index === station.idx,
-        isTarget: robotState.targetId === station.id,
-        queueInfo: stationQueueMap[station.id] || null,
-        routeStopInfo: routeStopMap[station.id] || null,
-      })),
-    [stations, robotState.index, robotState.targetId, routeStopMap, stationQueueMap, waitingSpecimenCounts]
+      stations.map((station) => {
+        // isCurrent: chỉ dùng currentStation từ PLC để xác định cabin đang ở trạm nào
+        // plcState.currentStation là số trạm (1-4), station.idx cũng là số (0-indexed)
+        // station.id là ST-01..ST-04, map với plcState.currentStation
+        const plcStationNum = plcState?.currentStation; // 1-4
+        const isCurrentByPlc = plcStationNum != null && parseInt(station.id.split('-')[1], 10) === plcStationNum;
+        return {
+          station: {
+            ...station,
+            samples: waitingSpecimenCounts[station.id] || 0,
+          },
+          isCurrent: isCurrentByPlc,
+          isTarget: robotState.targetId === station.id,
+          queueInfo: stationQueueMap[station.id] || null,
+          routeStopInfo: routeStopMap[station.id] || null,
+        };
+      }),
+    [stations, robotState.targetId, routeStopMap, stationQueueMap, waitingSpecimenCounts, plcState?.currentStation]
   );
 
   const destinationOptions = useMemo(() => {
@@ -249,6 +326,32 @@ const ControlPage = memo(function ControlPage({ scada }) {
       dispatchDialog.priorityStationId
     );
   }, [dispatchDialog.originStation, dispatchDialog.priorityStationId, dispatchDialog.selectedStationIds, previewDispatchRoute]);
+
+  // === Merge dialog: compute future station list and preview ===
+  const mergeFutureStations = useMemo(() => {
+    if (!mergeDialog.open || !mergeDialog.stationId || !activeDispatchRoute) return [];
+    const currentStopIndex = activeDispatchRoute.currentStopIndex;
+    const remainingStationIds = activeDispatchRoute.stops
+      .slice(currentStopIndex + 1)
+      .filter((stop) => stop.status !== 'confirmed')
+      .map((stop) => stop.stationId);
+    const newDestinationIds = scanList
+      .map((spec) => spec.destinationStationId)
+      .filter((id) => id && id !== mergeDialog.stationId);
+    const allFutureIds = [...new Set([...remainingStationIds, ...newDestinationIds])];
+    return allFutureIds
+      .map((id) => stations.find((s) => s.id === id))
+      .filter(Boolean);
+  }, [mergeDialog.open, mergeDialog.stationId, activeDispatchRoute, scanList, stations]);
+
+  const mergeRoutePreview = useMemo(() => {
+    if (!mergeDialog.open || !mergeDialog.stationId || mergeFutureStations.length === 0) return [];
+    return previewDispatchRoute(
+      mergeDialog.stationId,
+      mergeFutureStations.map((s) => s.id),
+      mergeDialog.priorityStationId
+    );
+  }, [mergeDialog.open, mergeDialog.stationId, mergeDialog.priorityStationId, mergeFutureStations, previewDispatchRoute]);
 
   return (
     <Fade in timeout={400}>
@@ -326,8 +429,25 @@ const ControlPage = memo(function ControlPage({ scada }) {
                 KHÔI PHỤC
               </Button>
             )}
-            <EStopButton onEStop={handleEStop} />
+            <EStopButton onEStop={handleEStop} hwEStopActive={Boolean(plcState?.eStopActive)} />
           </Box>
+
+          {/* === E-Stop Freeze Banner === */}
+          {isEStop && (
+            <Alert
+              severity="error"
+              icon={<PowerOff />}
+              sx={{
+                mb: 2,
+                fontWeight: 700,
+                fontSize: '0.95rem',
+                border: '2px solid #C41C1C',
+                animation: 'flash-urgent 1.5s ease-in-out infinite',
+              }}
+            >
+              ⛔ HỆ THỐNG ĐANG DỪNG KHẨN CẤP — Mọi thao tác đã bị khóa. Lộ trình được giữ lại và sẽ tiếp tục sau khi giải phóng E-Stop.
+            </Alert>
+          )}
 
           {maintenanceMode.enabled && (
             <Alert severity="warning" sx={{ mb: 2 }}>
@@ -353,7 +473,7 @@ const ControlPage = memo(function ControlPage({ scada }) {
                 </span>
               ))}
               {activeDispatchRoute.status === 'waiting_confirm'
-                ? ' - Đang chờ xác nhận đã lấy hàng.'
+                ? ' - Đang chờ xác nhận đã nhận hàng.'
                 : ' - Cabin đang di chuyển theo lộ trình.'}
               {canAppendSpecimensAtStop
                 ? ' Có thể quét thêm mẫu tại trạm này trước khi xác nhận để ghép vào tuyến.'
@@ -381,11 +501,13 @@ const ControlPage = memo(function ControlPage({ scada }) {
                   onCall={handleCall}
                   onDispatchRequest={handleDispatchRequest}
                   canDispatch={canDispatch && isCurrent}
-                  disableActions={maintenanceMode.enabled || Boolean(activeDispatchRoute)}
+                  disableActions={maintenanceMode.enabled || isEStop || Boolean(activeDispatchRoute)}
                   queueInfo={queueInfo}
                   routeStopInfo={routeStopInfo}
                   onConfirmPickup={handleConfirmPickup}
+                  onConfirmStationPickup={handleConfirmStationPickup}
                   currentUser={scada.currentUser}
+                  sensorActive={Boolean(plcState?.stationSensors?.[station.id])}
                 />
               </Grid>
             ))}
@@ -558,6 +680,140 @@ const ControlPage = memo(function ControlPage({ scada }) {
                 sx={{ fontWeight: 800, minWidth: 140, minHeight: 46 }}
               >
                 Tạo lộ trình {scanList.length} mẫu
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* === Merge priority dialog === */}
+          <Dialog
+            open={mergeDialog.open}
+            onClose={handleCancelMerge}
+            maxWidth="md"
+            fullWidth
+            TransitionComponent={Fade}
+          >
+            <DialogTitle
+              sx={{
+                bgcolor: 'warning.main',
+                color: '#111',
+              }}
+            >
+              Ghép hàng — Chọn trạm ưu tiên
+            </DialogTitle>
+            <DialogContent dividers sx={{ pt: 2 }}>
+              <Typography sx={{ mb: 2 }}>
+                Bạn đang ghép <strong>{scanList.length} mẫu mới</strong> vào tuyến hiện tại.
+                Chọn ngôi sao ★ để ưu tiên một trạm chạy trước trong lộ trình còn lại.
+              </Typography>
+
+              <Typography sx={{ mb: 0.75, fontWeight: 800, color: 'text.primary' }}>
+                Trạm còn lại + trạm mới
+              </Typography>
+              <Stack spacing={0.75} sx={{ mb: 2 }}>
+                {mergeFutureStations.map((station) => {
+                  const isPriority = mergeDialog.priorityStationId === station.id;
+                  const isNewFromScan = scanList.some((spec) => spec.destinationStationId === station.id);
+                  const existingInRoute = activeDispatchRoute?.stops?.some(
+                    (stop) => stop.stationId === station.id && stop.status !== 'confirmed'
+                  );
+                  const newSpecimenCount = scanList.filter((spec) => spec.destinationStationId === station.id).length;
+                  const existingSpecimenCount = activeDispatchRoute?.stops
+                    ?.find((stop) => stop.stationId === station.id)?.specimenCount || 0;
+
+                  return (
+                    <Paper
+                      key={station.id}
+                      sx={{
+                        p: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        border: `1px solid ${isPriority ? alpha('#FF9800', 0.5) : alpha('#1976D2', 0.18)}`,
+                        bgcolor: isPriority
+                          ? alpha('#FF9800', 0.08)
+                          : isNewFromScan && !existingInRoute
+                            ? alpha('#0BDF50', 0.08)
+                            : alpha('#65B5FF', 0.1),
+                      }}
+                    >
+                      <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 800, color: 'text.primary' }}>
+                          {station.name}
+                          {isNewFromScan && !existingInRoute && (
+                            <Chip label="MỚI" size="small" color="success" sx={{ ml: 1, fontWeight: 700, height: 20, fontSize: '0.68rem' }} />
+                          )}
+                        </Typography>
+                        <Typography sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
+                          {station.id}
+                          {existingInRoute ? ` · ${existingSpecimenCount} mẫu cũ` : ''}
+                          {newSpecimenCount > 0 ? ` · ${newSpecimenCount} mẫu mới` : ''}
+                        </Typography>
+                      </Box>
+                      <Tooltip title={isPriority ? 'Bỏ ưu tiên' : 'Ưu tiên trạm này chạy trước'}>
+                        <IconButton
+                          color={isPriority ? 'warning' : 'default'}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleToggleMergePriority(station.id);
+                          }}
+                        >
+                          {isPriority ? <Star /> : <StarBorder />}
+                        </IconButton>
+                      </Tooltip>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+
+              <Box
+                sx={{
+                  p: 1.25,
+                  borderRadius: 2,
+                  bgcolor: alpha('#0BDF50', 0.08),
+                  border: `1px solid ${alpha('#0BDF50', 0.18)}`,
+                }}
+              >
+                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', fontWeight: 800, mb: 0.5 }}>
+                  LỘ TRÌNH DỰ KIẾN SAU GHÉP
+                </Typography>
+                {mergeRoutePreview.length > 0 ? (
+                  <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" alignItems="center">
+                    <Chip
+                      label={stations.find((s) => s.id === mergeDialog.stationId)?.name || 'Trạm hiện tại'}
+                      size="small"
+                      color="primary"
+                    />
+                    {mergeRoutePreview.map((station, index) => (
+                      <Box key={station.id} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                        <Typography sx={{ color: 'text.secondary', fontWeight: 800 }}>→</Typography>
+                        <Chip
+                          label={`${index + 1}. ${station.name}${mergeDialog.priorityStationId === station.id ? ' ★' : ''}`}
+                          size="small"
+                          color={mergeDialog.priorityStationId === station.id ? 'warning' : 'default'}
+                          sx={{ fontWeight: 700 }}
+                        />
+                      </Box>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography sx={{ color: 'text.secondary', fontSize: '0.85rem' }}>
+                    Không còn trạm nào phía trước.
+                  </Typography>
+                )}
+              </Box>
+            </DialogContent>
+            <DialogActions sx={{ p: 2 }}>
+              <Button onClick={handleCancelMerge} sx={{ fontWeight: 700 }}>
+                Hủy
+              </Button>
+              <Button
+                variant="contained"
+                color="warning"
+                onClick={handleConfirmMerge}
+                disabled={isConfirmingMerge}
+                sx={{ fontWeight: 800, minWidth: 180, minHeight: 46 }}
+              >
+                {isConfirmingMerge ? 'ĐANG XÁC NHẬN...' : `Xác nhận ghép ${scanList.length} mẫu`}
               </Button>
             </DialogActions>
           </Dialog>

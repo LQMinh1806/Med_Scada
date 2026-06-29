@@ -1,6 +1,6 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { Box, Button, Paper, Typography, Chip, Tooltip, alpha } from '@mui/material';
-import { HourglassBottom, CheckCircle, Star } from '@mui/icons-material';
+import { HourglassBottom, CheckCircle, Star, Sensors } from '@mui/icons-material';
 
 /**
  * Individual station control card with LED indicator, route status,
@@ -21,7 +21,9 @@ const StationControlCard = memo(function StationControlCard({
   queueInfo = null,
   routeStopInfo = null,
   onConfirmPickup,
+  onConfirmStationPickup,   // Nút LẤY HÀNG → Confirm_CMD2
   currentUser = null,
+  sensorActive = false,
 }) {
   const ledColor = isCurrent ? '#0BDF50' : isTarget ? '#1976D2' : '#868685';
   const ledGlow = isCurrent
@@ -38,6 +40,27 @@ const StationControlCard = memo(function StationControlCard({
   const handleConfirmPickup = useCallback(() => {
     if (onConfirmPickup) onConfirmPickup(station.id);
   }, [onConfirmPickup, station.id]);
+  const handleStationPickup = useCallback(() => {
+    if (onConfirmStationPickup) onConfirmStationPickup(station.id);
+  }, [onConfirmStationPickup, station.id]);
+
+  // Trạng thái nút nhấn nhả (momentary) — disable 2s sau khi click để chống double-click
+  const [isConfirmingPickup, setIsConfirmingPickup] = useState(false);
+  const [isConfirmingStation, setIsConfirmingStation] = useState(false);
+
+  const handleConfirmPickupMomentary = useCallback(() => {
+    if (isConfirmingPickup) return;
+    setIsConfirmingPickup(true);
+    handleConfirmPickup();
+    setTimeout(() => setIsConfirmingPickup(false), 2000);
+  }, [handleConfirmPickup, isConfirmingPickup]);
+
+  const handleStationPickupMomentary = useCallback(() => {
+    if (isConfirmingStation) return;
+    setIsConfirmingStation(true);
+    handleStationPickup();
+    setTimeout(() => setIsConfirmingStation(false), 2000);
+  }, [handleStationPickup, isConfirmingStation]);
 
   // --- Location-based RBAC logic ---
   const currentRole = String(currentUser?.role || '').toLowerCase();
@@ -140,12 +163,29 @@ const StationControlCard = memo(function StationControlCard({
               icon={routeStopInfo.isPriority ? <Star sx={{ fontSize: '15px !important' }} /> : undefined}
               label={
                 routeStopInfo.canConfirm
-                  ? 'Chờ lấy hàng'
+                  ? 'Chờ nhận hàng'
                   : `Tuyến #${routeStopInfo.position}/${routeStopInfo.total}`
               }
               size="medium"
               color={routeStopInfo.canConfirm ? 'warning' : 'info'}
               sx={{ fontWeight: 800, fontSize: '0.73rem', height: 26 }}
+            />
+          )}
+          {/* Hardware sensor indicator (I0.x) */}
+          {sensorActive && (
+            <Chip
+              icon={<Sensors sx={{ fontSize: '15px !important' }} />}
+              label="CABIN TẠI ĐÂY"
+              size="medium"
+              sx={{
+                fontWeight: 800,
+                fontSize: '0.73rem',
+                height: 26,
+                bgcolor: alpha('#4CAF50', 0.15),
+                color: '#2E7D32',
+                border: `1px solid ${alpha('#4CAF50', 0.4)}`,
+                animation: 'flash-urgent 2s ease-in-out infinite',
+              }}
             />
           )}
         </Box>
@@ -206,8 +246,8 @@ const StationControlCard = memo(function StationControlCard({
                 variant={canConfirmPickup ? 'contained' : 'outlined'}
                 color={canConfirmPickup ? 'success' : 'inherit'}
                 fullWidth
-                disabled={!canConfirmPickup}
-                onClick={handleConfirmPickup}
+                disabled={!canConfirmPickup || isConfirmingPickup}
+                onClick={handleConfirmPickupMomentary}
                 startIcon={<CheckCircle />}
                 sx={{
                   py: 0.75,
@@ -218,10 +258,37 @@ const StationControlCard = memo(function StationControlCard({
                   }),
                 }}
               >
-                XÁC NHẬN ĐÃ LẤY HÀNG
+                {isConfirmingPickup ? 'ĐANG XÁC NHẬN...' : 'XÁC NHẬN ĐÃ NHẬN HÀNG'}
               </Button>
             </span>
           </Tooltip>
+        )}
+        {/* Nút GỬI HÀNG: hiển thị khi cabin đang ở trạm này (isCurrent=true), gửi Confirm_CMD2 */}
+        {isCurrent && onConfirmStationPickup && (
+          <Button
+            variant="contained"
+            fullWidth
+            onClick={handleStationPickupMomentary}
+            disabled={disableActions || isConfirmingStation}
+            sx={{
+              py: 0.8,
+              fontSize: '0.85rem',
+              fontWeight: 800,
+              bgcolor: isConfirmingStation ? alpha('#FF6F00', 0.5) : '#FF6F00',
+              color: '#fff',
+              border: '2px solid #E65100',
+              boxShadow: `0 8px 18px ${alpha('#FF6F00', 0.35)}`,
+              animation: isConfirmingStation ? 'none' : 'flash-urgent 2s ease-in-out infinite',
+              '&:hover': {
+                bgcolor: '#E65100',
+              },
+              '&.Mui-disabled': {
+                bgcolor: alpha('#FF6F00', 0.3),
+              },
+            }}
+          >
+            {isConfirmingStation ? 'ĐANG GỬI LỆNH...' : '➡ GỬI HÀNG'}
+          </Button>
         )}
       </Box>
     </Paper>

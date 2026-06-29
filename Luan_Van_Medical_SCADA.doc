@@ -1,0 +1,145 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+    <meta charset="utf-8">
+    <title>Luận Văn Tốt Nghiệp - Medical SCADA</title>
+    <style>
+        body { font-family: 'Times New Roman', serif; font-size: 13pt; line-height: 1.5; padding: 20px; }
+        h1 { font-size: 16pt; text-align: center; font-weight: bold; text-transform: uppercase; margin-bottom: 20px; margin-top: 30px;}
+        h2 { font-size: 14pt; font-weight: bold; margin-top: 20px; text-transform: uppercase; }
+        h3 { font-size: 13pt; font-weight: bold; font-style: italic; margin-top: 15px; }
+        h4 { font-size: 13pt; font-weight: bold; margin-top: 10px; }
+        p { margin-bottom: 10px; text-align: justify; text-indent: 1cm; }
+        ul, ol { margin-top: 0; margin-bottom: 10px; padding-left: 1.5cm; }
+        li { margin-bottom: 5px; text-align: justify; }
+        strong { font-weight: bold; }
+        .center { text-align: center; text-indent: 0;}
+    </style>
+</head>
+<body>
+    <div class="center">
+        <p><strong>BỘ GIÁO DỤC VÀ ĐÀO TẠO</strong><br>
+        <strong>TRƯỜNG ĐẠI HỌC ...</strong></p>
+        <br><br><br><br>
+        <h1 style="font-size: 24pt;">LUẬN VĂN TỐT NGHIỆP</h1>
+        <h2 style="font-size: 18pt;">ĐỀ TÀI: NGHIÊN CỨU VÀ XÂY DỰNG HỆ THỐNG ĐIỀU KHIỂN GIÁM SÁT CABIN VẬN CHUYỂN MẪU BỆNH PHẨM TRONG Y TẾ (MEDICAL SCADA)</h2>
+        <br><br><br><br>
+    </div>
+    
+    <div style="page-break-before: always;"></div>
+
+    <h1>MỞ ĐẦU</h1>
+    <h2>1. Lý do chọn đề tài</h2>
+    <p>Trong môi trường y tế hiện đại, việc vận chuyển mẫu bệnh phẩm giữa các khoa phòng (Xét nghiệm, Vi sinh, PCR,...) đòi hỏi tính chính xác, an toàn và tốc độ cao. Các phương pháp thủ công không chỉ tiêu tốn nhân lực mà còn tiềm ẩn nguy cơ lây nhiễm chéo hoặc nhầm lẫn mẫu. Mặc dù các hệ thống vận chuyển tự động (như hệ thống ống khí nén - Pneumatic Tube System) đã tồn tại, chúng thường có chi phí cực kỳ đắt đỏ, khó bảo trì và không theo dõi được trạng thái mẫu bệnh phẩm theo thời gian thực (real-time). Do đó, việc nghiên cứu và xây dựng một hệ thống SCADA (Supervisory Control and Data Acquisition) kết hợp với các công nghệ Web hiện đại, thiết bị IoT và nền tảng điều khiển công nghiệp mở ra một giải pháp tối ưu, tiết kiệm chi phí nhưng vẫn đảm bảo tính nghiêm ngặt trong vận hành y tế.</p>
+
+    <h2>2. Mục tiêu nghiên cứu</h2>
+    <ul>
+        <li>Nghiên cứu ứng dụng chuẩn giao tiếp công nghiệp OPC UA kết hợp với kiến trúc Web hiện đại (ReactJS, Node.js) để phá vỡ khoảng cách giữa mạng IT (Information Technology) và mạng OT (Operational Technology).</li>
+        <li>Phát triển các giải thuật điều phối tối ưu (Elevator/LOOK Algorithm) nhằm tăng cường hiệu suất di chuyển của cabin vận chuyển.</li>
+        <li>Tích hợp các thiết bị IoT (ESP32/ESP8266) nhằm cung cấp giải pháp bảo mật phần cứng độc lập (xác thực vân tay) và thu thập dữ liệu môi trường liên tục.</li>
+    </ul>
+
+    <h2>3. Đối tượng và phạm vi nghiên cứu</h2>
+    <ul>
+        <li><strong>Đối tượng nghiên cứu:</strong> Giao thức OPC UA, kiến trúc Real-time WebSockets, vi điều khiển ESP32/ESP8266, thuật toán lập lịch đa mục tiêu (Priority Queue).</li>
+        <li><strong>Phạm vi nghiên cứu:</strong> Hệ thống bao gồm phần mềm Web phân quyền đa lớp (HMI), máy chủ trung tâm (Gateway), và phần cứng mô phỏng điều khiển động cơ cabin với các cảm biến môi trường/vân tay.</li>
+    </ul>
+
+    <div style="page-break-before: always;"></div>
+
+    <h1>CHƯƠNG 1: CƠ SỞ LÝ THUYẾT VÀ CÔNG NGHỆ ỨNG DỤNG</h1>
+    
+    <h2>1.1 Tổng quan về hệ thống SCADA</h2>
+    <p>SCADA (Supervisory Control and Data Acquisition) là hệ thống thu thập dữ liệu và điều khiển giám sát. Một hệ thống SCADA điển hình bao gồm phần mềm HMI (Human-Machine Interface), thiết bị RTU/PLC, mạng viễn thông và máy chủ. Trong đề tài này, Web Browser đóng vai trò là trạm HMI, Node.js Server đóng vai trò là Master Station, và Kepware OPC/PLC đóng vai trò là thiết bị thực thi dưới hiện trường.</p>
+    
+    <h2>1.2 Giao thức OPC UA (Open Platform Communications Unified Architecture)</h2>
+    <p>OPC UA là tiêu chuẩn giao tiếp máy-máy (M2M) tiên tiến nhất trong công nghiệp 4.0. Trái ngược với OPC DA truyền thống vốn phụ thuộc vào Windows COM/DCOM, OPC UA độc lập với nền tảng, tích hợp bảo mật sâu và định tuyến qua nền tảng TCP/IP. Hệ thống sử dụng thư viện <code>node-opcua</code> để duy trì một <code>ClientSubscription</code>, qua đó giám sát các thẻ (Tags) trạng thái từ PLC mà không làm quá tải hệ thống nhờ cơ chế lấy mẫu theo sự kiện (Event-driven sampling).</p>
+
+    <h2>1.3 Kiến trúc Mạng Hướng Sự Kiện (Event-Driven Architecture) với WebSockets</h2>
+    <p>Giao tiếp truyền thống HTTP mang tính chất Request-Response, gây ra độ trễ (latency) lớn khi cần cập nhật trạng thái liên tục. Dự án ứng dụng WebSockets thông qua thư viện Socket.IO, duy trì một đường ống TCP song công (full-duplex). Node.js Server đóng vai trò trung tâm phân phối, lập tức phát sóng (Broadcast) sự thay đổi của biến tần động cơ hay cảm biến cho tất cả các thiết bị đang hiển thị giao diện UI mà không cần tải lại trang.</p>
+
+    <h2>1.4 Công nghệ Web Full-stack (React & Node.js)</h2>
+    <p>Hệ thống sử dụng Node.js (với framework Express) làm Backend nhờ khả năng xử lý bất đồng bộ mạnh mẽ (Asynchronous I/O), hoàn hảo cho việc xử lý hàng ngàn kết nối Socket đồng thời. Frontend được xây dựng bằng thư viện React (khởi tạo qua Vite) cho phép tạo ra giao diện HMI dưới dạng Single Page Application (SPA). SPA giúp duy trì trạng thái ứng dụng cục bộ và mượt mà, kết hợp với các Custom Hooks (<code>useScada</code>, <code>useOpcUaSocket</code>) để quản lý luồng dữ liệu thời gian thực.</p>
+
+    <div style="page-break-before: always;"></div>
+
+    <h1>CHƯƠNG 2: PHÂN TÍCH VÀ THIẾT KẾ HỆ THỐNG</h1>
+
+    <h2>2.1 Kiến trúc tổng thể</h2>
+    <p>Hệ thống Medical SCADA được phân tầng rành mạch thành 5 lớp kiến trúc (Layered Architecture), đảm bảo tính module hóa và dễ bảo trì, bao gồm:</p>
+    <ul>
+        <li><strong>Tầng Giao Diện (Client Layer):</strong> Cung cấp UI điều khiển, quản trị, hiển thị biểu đồ và hoạt ảnh mô phỏng trạng thái Cabin. Phân quyền hiển thị (UI RBAC) ẩn đi các tác vụ không thuộc thẩm quyền.</li>
+        <li><strong>Tầng Trung Tâm (API Server / Hub Layer):</strong> Đóng vai trò là Gateway, tiếp nhận HTTP Request, WebSocket messages. Xử lý logic xác thực, phân quyền và kết nối CSDL.</li>
+        <li><strong>Tầng Cầu Nối Công Nghiệp (OPC UA Bridge Layer):</strong> Chuyển dịch ngôn ngữ phần mềm sang ngôn ngữ công nghiệp. Quản lý việc Đọc/Ghi tag xuống OPC Server.</li>
+        <li><strong>Tầng Thiết Bị Chấp Hành (PLC Layer):</strong> Trực tiếp vận hành phần cứng vật lý (biến tần, rơ-le, phanh từ), dựa trên các xung điều khiển từ OPC UA.</li>
+        <li><strong>Tầng Thiết Bị Vi Ngoại Vi IoT (IoT Edge Devices):</strong> Gồm các module ESP32/ESP8266 đo môi trường cabin (nhiệt độ, độ ẩm, gia tốc) và xử lý vân tay. Các module này hoàn toàn cô lập với mạng công nghiệp, giao tiếp song song qua Wi-Fi.</li>
+    </ul>
+
+    <h2>2.2 Thiết kế Cơ Sở Dữ Liệu</h2>
+    <p>Hệ thống sử dụng PostgreSQL kết hợp với Prisma ORM, đảm bảo tính toàn vẹn và các ràng buộc dữ liệu. Các thực thể cốt lõi bao gồm:</p>
+    <ul>
+        <li><strong>User:</strong> Quản lý thông tin tài khoản, chuỗi mã hóa mật khẩu băm (Password Hash), thuộc tính Vai trò (Role: TECH, OPERATOR), tham chiếu mã vân tay (<code>fingerprintId</code>) và Trạm y tế (<code>stationId</code>).</li>
+        <li><strong>Station:</strong> Lưu trữ thông tin chỉ mục vị trí vật lý (<code>locationIndex</code>) của các trạm, là cơ sở để tính toán thuật toán hàng đợi.</li>
+        <li><strong>Specimen:</strong> Thực thể Mẫu Bệnh Phẩm, định danh bằng <code>barcode</code>, lưu trữ tính chất ưu tiên (ROUTINE, STAT) và lịch sử di chuyển (Status: PENDING, IN_TRANSIT, COMPLETED).</li>
+        <li><strong>TransportRecord:</strong> Thực thể lưu dấu thanh tra (Audit Trail), ghi nhận chi tiết lịch sử vận hành cabin (thời gian đi, thời gian đến, quãng đường).</li>
+    </ul>
+
+    <div style="page-break-before: always;"></div>
+
+    <h1>CHƯƠNG 3: LUỒNG NGHIỆP VỤ VÀ THUẬT TOÁN ĐIỀU PHỐI CỐT LÕI</h1>
+
+    <h2>3.1 Thuật Toán Điều Phối Cabin (Queue Scheduler & LOOK Algorithm)</h2>
+    <p>Đây là bài toán trọng tâm của hệ thống. Trong môi trường y tế có nhiều phòng khoa (ST-01 đến ST-04), nếu áp dụng cơ chế xử lý hàng đợi FIFO (First In, First Out), cabin có thể bị điều phối chạy zig-zag không tối ưu, gây lãng phí năng lượng và kéo dài thời gian chờ. Do đó, hệ thống ứng dụng mô hình <strong>Priority Queue kết hợp Thuật toán Thang Máy (LOOK Algorithm)</strong>.</p>
+    
+    <h3>3.1.1 Nguyên lý hoạt động</h3>
+    <ul>
+        <li><strong>Gom chuyến cùng chiều (Directional Batching):</strong> Hệ thống ghi nhận trạng thái hướng di chuyển hiện tại của Cabin (Đi về trạm đầu hay đi về trạm cuối). Dựa trên hàm tính khoảng cách vị trí <code>stationDistance()</code>, hệ thống sắp xếp lại hàng đợi để Cabin luôn dừng trả các mẫu tại các trạm cùng nằm trên quỹ đạo di chuyển hiện tại trước khi đổi hướng.</li>
+        <li><strong>Cắt ngang ưu tiên (Preemption):</strong> Hệ thống hỗ trợ cờ ưu tiên <code>STAT</code> (Khẩn cấp y tế). Khi một mẫu bệnh phẩm có nhãn STAT được nạp vào, thuật toán lập tức bỏ qua logic tối ưu đoạn đường và chèn lệnh gọi này lên ưu tiên cao nhất, ép thiết bị xử lý ngay lập tức để đáp ứng thời gian vàng trong y tế.</li>
+    </ul>
+
+    <h2>3.2 Luồng Bảo Mật Và Xác Thực Phần Cứng Bằng Vân Tay (Hardware Authentication)</h2>
+    <p>Thay vì thiết kế hệ thống đăng nhập thuần túy bằng bàn phím, hệ thống Medical SCADA triển khai mô hình xác thực <strong>Wait-Room Login (Phòng Chờ Đăng Nhập)</strong> kết hợp IoT không chạm (Contactless IoT Login), giải quyết bài toán chống lây nhiễm bề mặt và thao tác nhanh.</p>
+    
+    <h3>3.2.1 Quy trình thực thi</h3>
+    <p>Hệ thống vi điều khiển ESP8266 được trang bị cảm biến quang học R307, hoàn toàn không được đấu nối vào CSDL nội bộ để đảm bảo an toàn vùng mạng (Network Segregation).</p>
+    <ol>
+        <li>Khi nhân viên y tế nhấn nút "Đăng nhập vân tay" trên Web, Server sinh ra một phòng chờ (Socket.IO Room) và cấp một Ticket ID, đồng thời phát sóng gói tin <strong>UDP Discovery (Port 3031)</strong> <code>MEDSCADA_LOGIN_TRIGGER</code> ra toàn mạng LAN.</li>
+        <li>ESP8266 thu được gói tin UDP lập tức thức giấc và chuyển sang chế độ quét vòng lặp tần số cao, triệt tiêu độ trễ polling truyền thống.</li>
+        <li>Nhân viên đặt ngón tay vào cảm biến, ESP8266 trích xuất được ID số định danh và truyền mã này qua REST API (được mã hóa qua <code>X-API-Key</code>).</li>
+        <li>Backend nhận API, tra cứu CSDL để lấy thông tin người dùng, sinh ra chuỗi <code>JWT</code> an toàn.</li>
+        <li>Backend quay lại Socket Room, tìm trình duyệt đang chờ và "Push" sự kiện thành công kèm Token, trình duyệt tự động chuyển hướng.</li>
+    </ol>
+    <p>Cơ chế này đạt được mục tiêu: Backend an toàn, nâng cấp phần cứng cắm-và-chạy (Plug & Play) không giới hạn.</p>
+
+    <h2>3.3 Kỹ Thuật Đảm Bảo An Toàn Vận Hành Cơ Khí</h2>
+    <p>Hệ thống ứng dụng kỹ thuật <strong>Pulse Logic (Xung cạnh lên)</strong> thay vì tín hiệu tĩnh (Hold Signal) để ra lệnh cho động cơ chạy. Server gửi một chuỗi <code>TRUE</code> -> chờ 500ms -> <code>FALSE</code> tới biến <code>Move_Execute</code> của OPC UA. Nhờ vậy, ngay cả khi đứt cáp mạng LAN, tín hiệu không bị "kẹt" ở trạng thái TRUE, ngăn chặn nguy cơ động cơ chạy liên tục đâm vào vách (Fail-safe design).</p>
+    <p>Đồng thời, hệ thống có thiết kế nút <strong>Hardware E-Stop</strong> cơ học. Ngay khi cảm biến phát hiện nút bị nhấn (Tag <code>I1.2</code>), Node.js server hủy toàn bộ Hàng đợi lệnh (Queue) và cấm mọi thao tác qua Socket.IO cho tới khi có kỹ sư quyền <code>TECH</code> tới xác nhận lỗi.</p>
+
+    <div style="page-break-before: always;"></div>
+
+    <h1>CHƯƠNG 4: TRIỂN KHAI VÀ BẢO MẬT</h1>
+
+    <h2>4.1 Cơ chế Đồng Bộ Thời Gian Thực (Single Source of Truth & Hydration)</h2>
+    <p>SCADA đòi hỏi tính nhất quán màn hình cao nhất. Mọi thao tác cục bộ trên giao diện của một trạm phải lập tức hiện hình trên toàn bộ các trạm y tế khác.</p>
+    <ul>
+        <li><strong>State Hydration:</strong> Bất cứ khi nào một Tab trình duyệt tải lại, nó đồng bộ toàn bộ (Hydrate) Cây trạng thái (State Tree) từ máy chủ xuống qua sự kiện <code>scada:stateSync</code>. Trình duyệt không bao giờ tự đưa ra quyết định mà không hỏi máy chủ.</li>
+        <li><strong>Inter-tab Broadcast:</strong> Để tối ưu RAM và giảm tải cho Server, nếu nhân viên mở 5 tab trên cùng 1 máy tính, hệ thống dùng API <code>BroadcastChannel</code> của trình duyệt. Dữ liệu thời gian thực được đẩy qua RAM cục bộ giữa các tab với độ trễ xấp xỉ 0ms.</li>
+    </ul>
+
+    <h2>4.2 Bảo mật quyền truy cập theo không gian vật lý (Location-based RBAC)</h2>
+    <p>Việc kiểm soát truy cập (RBAC) được chia làm 2 lớp:</p>
+    <ol>
+        <li><strong>UI Level:</strong> Nút gọi Cabin bị ẩn nếu Trạm hiện tại không khớp với trạm quản lý của nhân viên.</li>
+        <li><strong>Backend Level:</strong> Payload của JWT chứa trường <code>stationId</code>. Ngay cả khi một kẻ tấn công cố tình tiêm mã (inject code) qua Console trình duyệt hay Postman, Middleware ở Backend sẽ chặn lệnh và từ chối cấp quyền điều khiển ngoại vi, đảm bảo hệ thống không bị tấn công chiếm quyền.</li>
+    </ol>
+
+    <div style="page-break-before: always;"></div>
+
+    <h1>KẾT LUẬN</h1>
+    <h2>1. Kết quả đạt được</h2>
+    <p>Luận văn đã hoàn thành việc thiết kế và xây dựng thành công một hệ thống Medical SCADA hoàn chỉnh, đáp ứng đầy đủ các tiêu chuẩn nghiệp vụ vận chuyển mẫu y tế. Đề tài đã hiện thực hóa thành công mô hình phần mềm Web hiện đại giao tiếp với tiêu chuẩn công nghiệp nặng (OPC UA / PLC), chứng minh khả năng thay thế các hệ thống vận chuyển truyền thống cồng kềnh bằng công nghệ IoT và thuật toán đa mục tiêu tiên tiến.</p>
+
+    <h2>2. Hướng phát triển</h2>
+    <p>Trong tương lai, hệ thống có thể được mở rộng bằng cách áp dụng Trí tuệ Nhân tạo (Machine Learning) để phân tích dữ liệu rung lắc/gia tốc từ cảm biến MPU6050, qua đó dự đoán tuổi thọ vòng bi động cơ (Predictive Maintenance). Hệ thống cũng có thể tích hợp với các phần mềm HIS (Hospital Information System) của bệnh viện để tự động lấy dữ liệu mã vạch bệnh nhân.</p>
+
+</body>
+</html>

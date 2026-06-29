@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
-    allowedHosts: ['medscada.id.vn'],
+    allowedHosts: 'all',
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:3000',

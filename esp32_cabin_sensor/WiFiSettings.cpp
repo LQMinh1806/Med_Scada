@@ -144,7 +144,7 @@ void WiFiSettingsClass::portal() {
       "<label for='password'>Mật khẩu WiFi:</label>"
       "<input type='password' name='password' placeholder='Nhập mật khẩu WiFi'>"
       "<label for='server'>Backend Server URL:</label>"
-      "<input type='text' name='server' placeholder='https://medscada.id.vn' value='"
+      "<input type='text' name='server' placeholder='http://192.168.0.123:3000' value='"
     );
     html += server_url;
     html += F("'>");
@@ -244,7 +244,7 @@ bool WiFiSettingsClass::connect(bool portal, int wait_seconds) {
   // 3. Tải thông số Backend tương ứng với SSID
   server_url = slurp("/server-url-" + ssid);
   if (server_url.isEmpty()) server_url = slurp("/server-url");
-  if (server_url.isEmpty()) server_url = "https://medscada.id.vn"; // Default Cloudflare tunnel (HTTPS required)
+  if (server_url.isEmpty()) server_url = "http://192.168.0.123:3000"; // IP tĩnh qua TP-Link router
   
   api_key = slurp("/api-key-" + ssid);
   if (api_key.isEmpty()) api_key = slurp("/api-key");

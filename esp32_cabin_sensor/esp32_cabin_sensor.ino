@@ -151,7 +151,7 @@ WiFiUDP udp;
 Preferences prefs;   // NVS namespace "cabin" — lưu encoderPulseCount qua mất điện
 
 // ── Biến trạng thái ─────────────────────────────────────────────────────────
-String serverUrl = "";            // Ví dụ: "http://192.168.1.91:3000"
+String serverUrl = "";            // Ví dụ: "http://192.168.0.123:3000"
 bool serverFound = false;
 bool mpuOk       = false;
 bool dhtOk       = false;

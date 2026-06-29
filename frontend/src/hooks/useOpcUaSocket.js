@@ -58,9 +58,16 @@ export default function useOpcUaSocket() {
     stationId: null,
     robotStatus: null,
     robotStatusLabel: 'Chưa kết nối',
-    arrivalDone: false,
+    cabinReady: true,    // Cabin_Ready flag from PLC (true=ready, false=busy lifting)
+    eStopActive: false,  // E-Stop_CMD từ PLC: true=đang dừng khẩn cấp (PLC gửi FALSE)
     isPlcConnected: false,
     isSocketConnected: false,
+    // Station position sensors (I0.4–I0.7): cabin presence at each station
+    stationSensors: { 'ST-01': false, 'ST-02': false, 'ST-03': false, 'ST-04': false },
+    // Lift sensors
+    liftSensors: { liftHigh1: false, liftHigh2: false },
+    // Hardware E-Stop button (physical, I1.2)
+    hwEStop: false,
   });
 
   // ── Connect / disconnect lifecycle ─────────────────────────────────────
@@ -111,7 +118,14 @@ export default function useOpcUaSocket() {
         stationId: data.stationId ?? prev.stationId,
         robotStatus: data.robotStatus ?? prev.robotStatus,
         robotStatusLabel: data.robotStatusLabel ?? prev.robotStatusLabel,
-        arrivalDone: data.arrivalDone ?? prev.arrivalDone,
+        cabinReady: data.cabinReady ?? prev.cabinReady,
+        eStopActive: data.eStopActive ?? prev.eStopActive,
+        // Station position sensors (I0.4–I0.7)
+        stationSensors: data.stationSensors ?? prev.stationSensors,
+        // Lift sensors
+        liftSensors: data.liftSensors ?? prev.liftSensors,
+        // Hardware E-Stop
+        hwEStop: data.hwEStop ?? prev.hwEStop,
       }));
     });
 
@@ -137,11 +151,45 @@ export default function useOpcUaSocket() {
       }));
     });
 
-    socket.on('plc:arrivalDone', (data) => {
+    socket.on('plc:stationSensors', (data) => {
       if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
         ...prev,
-        arrivalDone: data.value,
+        stationSensors: data,
+      }));
+    });
+
+    socket.on('plc:liftSensors', (data) => {
+      if (!data || typeof data !== 'object') return;
+      setPlcState((prev) => ({
+        ...prev,
+        liftSensors: data,
+      }));
+    });
+
+    socket.on('plc:hardwareEStop', (data) => {
+      if (!data || typeof data !== 'object') return;
+      setPlcState((prev) => ({
+        ...prev,
+        hwEStop: Boolean(data.active),
+      }));
+    });
+
+    socket.on('plc:cabinReady', (data) => {
+      if (!data || typeof data !== 'object') return;
+      setPlcState((prev) => ({
+        ...prev,
+        cabinReady: Boolean(data.ready),
+      }));
+    });
+
+    // Trạng thái E-Stop từ PLC (đọc biến E-Stop_CMD)
+    // active=true nghĩa là PLC đang trong trạng thái dừng khẩn cấp (E-Stop_CMD=FALSE)
+    socket.on('plc:eStopStatus', (data) => {
+      if (!data || typeof data !== 'object') return;
+      setPlcState((prev) => ({
+        ...prev,
+        eStopActive: Boolean(data.active),
       }));
     });
 
@@ -228,8 +276,8 @@ export default function useOpcUaSocket() {
    * @param {boolean} isStat         True for STAT (urgent) priority
    */
   const callCabin = useCallback(
-    (stationNumber, isStat = false, stationId = null, action = 'CALL') =>
-      emitCommand('plc:callCabin', { stationNumber, isStat, stationId, action }),
+    (stationNumber, isStat = false, stationId = null, action = 'CALL', withConfirm = false) =>
+      emitCommand('plc:callCabin', { stationNumber, isStat, stationId, action, withConfirm }),
     [emitCommand],
   );
 
@@ -246,6 +294,33 @@ export default function useOpcUaSocket() {
    */
   const releaseEStop = useCallback(
     () => emitCommand('plc:eStop', { active: false }),
+    [emitCommand],
+  );
+
+  /**
+   * Send Confirm_CMD1 = TRUE to trigger route creation / lift mechanism.
+   * PLC auto-resets Confirm_CMD1 to FALSE after activation.
+   */
+  const confirmStation = useCallback(
+    () => emitCommand('plc:confirmStation'),
+    [emitCommand],
+  );
+
+  /**
+   * Send Confirm_CMD = TRUE to trigger route stop confirmation.
+   * PLC auto-resets Confirm_CMD to FALSE after activation.
+   */
+  const confirmStop = useCallback(
+    () => emitCommand('plc:confirmStop'),
+    [emitCommand],
+  );
+
+  /**
+   * Send Confirm_CMD2 = TRUE to trigger pickup at current station.
+   * PLC auto-resets Confirm_CMD2 to FALSE after activation.
+   */
+  const confirmPickup = useCallback(
+    () => emitCommand('plc:confirmPickup'),
     [emitCommand],
   );
 
@@ -346,6 +421,9 @@ export default function useOpcUaSocket() {
     () => ({
       plcState,
       callCabin,
+      confirmStation,
+      confirmStop,
+      confirmPickup,
       triggerEStop,
       releaseEStop,
       resetError,
@@ -363,6 +441,6 @@ export default function useOpcUaSocket() {
       onCabinSensorRef,
       setOnCabinSensor,
     }),
-    [plcState, callCabin, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
+    [plcState, callCabin, confirmStation, confirmPickup, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
   );
 }

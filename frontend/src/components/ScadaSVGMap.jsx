@@ -217,7 +217,7 @@ const RailTrack = memo(function RailTrack({ railGeometry, ids }) {
   );
 });
 
-const StationNode = memo(function StationNode({ station, tx, ty, angle, onClick }) {
+const StationNode = memo(function StationNode({ station, tx, ty, angle, onClick, sensorActive }) {
   const handleClick = useCallback(() => onClick(station.id), [onClick, station.id]);
 
   return (
@@ -226,11 +226,22 @@ const StationNode = memo(function StationNode({ station, tx, ty, angle, onClick 
       style={{ cursor: 'pointer' }}
       onClick={handleClick}
     >
-      <rect x={-28} y={-22} width={56} height={44} rx={8} fill="#1f2c34" stroke="#607d8b" strokeWidth={2} />
-      <rect x={-24} y={-17} width={48} height={34} rx={6} fill="#E1F5FE" stroke="#0288D1" strokeWidth={1.5} />
-      <circle cx={20} cy={-11} r={3.2} fill="#7cffcb">
-        <animate attributeName="opacity" values="1;0.2;1" dur="1.6s" repeatCount="indefinite" />
+      <rect x={-28} y={-22} width={56} height={44} rx={8} fill="#1f2c34" stroke={sensorActive ? '#4CAF50' : '#607d8b'} strokeWidth={sensorActive ? 3 : 2} />
+      <rect x={-24} y={-17} width={48} height={34} rx={6} fill={sensorActive ? '#E8F5E9' : '#E1F5FE'} stroke={sensorActive ? '#4CAF50' : '#0288D1'} strokeWidth={1.5} />
+      {/* Status LED: bright green when sensor detects cabin */}
+      <circle cx={20} cy={-11} r={3.2} fill={sensorActive ? '#00E676' : '#7cffcb'}>
+        {sensorActive
+          ? <animate attributeName="opacity" values="1;0.5;1" dur="0.8s" repeatCount="indefinite" />
+          : <animate attributeName="opacity" values="1;0.2;1" dur="1.6s" repeatCount="indefinite" />
+        }
       </circle>
+      {/* Sensor active glow ring */}
+      {sensorActive && (
+        <circle cx={20} cy={-11} r={6} fill="none" stroke="#00E676" strokeWidth={1.5} opacity={0.6}>
+          <animate attributeName="r" values="4;8;4" dur="1.2s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0.7;0.15;0.7" dur="1.2s" repeatCount="indefinite" />
+        </circle>
+      )}
       <text x={0} y={10} fill="#212121" fontSize={14} fontWeight="700" textAnchor="middle">
         {station.id}
       </text>
@@ -360,7 +371,8 @@ const EncoderOverlay = memo(function EncoderOverlay({ encoderData }) {
 // === Main component ===
 
 const ScadaSVGMap = memo(function ScadaSVGMap({ scada, encoderData }) {
-  const { robotState, stations, railPoints, animating, animPos, moveId, callRobot } = scada;
+  const { robotState, stations, railPoints, animating, animPos, moveId, callRobot, plcState } = scada;
+  const stationSensors = plcState?.stationSensors || {};
   const rawId = useId();
 
   const idPrefix = useMemo(() => rawId.replace(/:/g, ''), [rawId]);
@@ -453,6 +465,7 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada, encoderData }) {
           ty={s.ty}
           angle={s.angle}
           onClick={callRobot}
+          sensorActive={Boolean(stationSensors[s.id])}
         />
       ))}
 

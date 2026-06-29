@@ -12,7 +12,7 @@ import {
   AUTH_COOKIE_NAME,
 } from '../config.js';
 import { parseCookieHeader } from '../middleware/auth.js';
-import { emitSnapshotToSocket, callCabin, setEStop, resetError, setMaintenanceMode as setPlcMaintenanceMode } from '../opcua-service.js';
+import { emitSnapshotToSocket, callCabin, setEStop, resetError, confirmRoute, confirmPickup, confirmStop, setMaintenanceMode as setPlcMaintenanceMode } from '../opcua-service.js';
 import {
   getActiveFingerprintLoginSocketId,
   setFingerprintLoginSession,
@@ -161,7 +161,8 @@ export function registerSocketHandlers(io) {
           throw new Error('Invalid stationNumber');
         }
         const isStat = Boolean(data?.isStat);
-        await callCabin(stationNumber, isStat);
+        const withConfirm = Boolean(data?.withConfirm);
+        await callCabin(stationNumber, isStat, withConfirm);
         console.log(`[Socket.io] callCabin executed successfully for ${socket.data.user?.username || socket.id}`);
         if (typeof ack === 'function') ack({ ok: true });
       } catch (err) {
@@ -191,6 +192,42 @@ export function registerSocketHandlers(io) {
         if (typeof ack === 'function') ack({ ok: true });
       } catch (err) {
         console.error('[Socket.io] plc:reset error:', err.message);
+        if (typeof ack === 'function') ack({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('plc:confirmStation', async (_data, ack) => {
+      if (!ensureSocketPermission(ack)) return;
+      try {
+        await confirmRoute();
+        console.log(`[Socket.io] confirmRoute (Confirm_CMD1) executed by ${socket.data.user?.username || socket.id}`);
+        if (typeof ack === 'function') ack({ ok: true });
+      } catch (err) {
+        console.error('[Socket.io] plc:confirmStation error:', err.message);
+        if (typeof ack === 'function') ack({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('plc:confirmStop', async (_data, ack) => {
+      if (!ensureSocketPermission(ack)) return;
+      try {
+        await confirmStop();
+        console.log(`[Socket.io] confirmStop (Confirm_CMD) executed by ${socket.data.user?.username || socket.id}`);
+        if (typeof ack === 'function') ack({ ok: true });
+      } catch (err) {
+        console.error('[Socket.io] plc:confirmStop error:', err.message);
+        if (typeof ack === 'function') ack({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('plc:confirmPickup', async (_data, ack) => {
+      if (!ensureSocketPermission(ack)) return;
+      try {
+        await confirmPickup();
+        console.log(`[Socket.io] confirmPickup (Confirm_CMD2) executed by ${socket.data.user?.username || socket.id}`);
+        if (typeof ack === 'function') ack({ ok: true });
+      } catch (err) {
+        console.error('[Socket.io] plc:confirmPickup error:', err.message);
         if (typeof ack === 'function') ack({ ok: false, error: err.message });
       }
     });
