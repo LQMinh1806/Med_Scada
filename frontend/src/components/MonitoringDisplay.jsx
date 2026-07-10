@@ -1,6 +1,5 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import {
-  Grid,
   Paper,
   Typography,
   Box,
@@ -16,12 +15,14 @@ import {
   Schedule,
   Speed,
   LocalShipping,
-  Insights,
+  PrecisionManufacturing,
+  AdminPanelSettings,
+  ArrowForward,
 } from '@mui/icons-material';
 import ScadaSVGMap from './ScadaSVGMap';
 import TransportHistoryDialog from './TransportHistoryDialog';
 import CabinSensorPanel from './CabinSensorPanel';
-import { ROBOT_STATUS } from '../constants';
+import { ROBOT_STATUS, USER_ROLES } from '../constants';
 
 const KpiCard = memo(function KpiCard({ icon, label, value, unit, color, trend }) {
   return (
@@ -33,7 +34,7 @@ const KpiCard = memo(function KpiCard({ icon, label, value, unit, color, trend }
         gap: 0.75,
         minHeight: 98,
         overflow: 'hidden',
-        borderTop: `2px solid ${color}`, 
+        borderTop: `2px solid ${color}`,
         transition: 'all 0.25s ease',
         '&:hover': {
           transform: 'translateY(-1px)',
@@ -170,43 +171,7 @@ const StationStatusChip = memo(function StationStatusChip({ station, queueInfo }
   );
 });
 
-const ThroughputSparkline = memo(function ThroughputSparkline({ points }) {
-  const chartPath = useMemo(() => {
-    const values = points.length > 0 ? points : [0];
-    const max = Math.max(...values, 1);
-    const min = Math.min(...values, 0);
-    const range = Math.max(max - min, 1);
-
-    return values
-      .map((value, index) => {
-        const x = (index / Math.max(values.length - 1, 1)) * 100;
-        const y = 100 - ((value - min) / range) * 100;
-        return `${x},${y}`;
-      })
-      .join(' ');
-  }, [points]);
-
-  return (
-    <Box sx={{ mt: 0.8, p: 0.8, borderRadius: 2, bgcolor: alpha('#65B5FF', 0.12) }}>
-      <svg width="100%" height="56" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <polyline
-          points={chartPath}
-          fill="none"
-          stroke="#1976D2"
-          strokeWidth="3"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      </svg>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.25 }}>
-        <Typography sx={{ fontSize: '0.66rem', color: 'text.secondary' }}>12h trước</Typography>
-        <Typography sx={{ fontSize: '0.66rem', color: 'text.secondary' }}>Hiện tại</Typography>
-      </Box>
-    </Box>
-  );
-});
-
-const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
+const MonitoringDisplay = memo(function MonitoringDisplay({ scada, navigateTo, currentUser, onControlAccess }) {
   const { robotState, stations, transportedSpecimens, queue, cabinSensorData, sensorHistory } = scada;
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
@@ -257,29 +222,101 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
   return (
     <Fade in timeout={400}>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.72 }}>
-        <Grid container spacing={0.75}>
-          <Grid item xs={6} sm={3}>
+        {/* ── KPI row + action buttons ────────────────────────────── */}
+        <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'stretch' }}>
+
+          {/* 4 KPI cards — nhỏ hơn */}
+          <Box sx={{
+            flex: 3,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, 1fr)',
+            gap: 0.75,
+          }}>
             <KpiCard icon={<LocalShipping />} label="Tổng vận chuyển" value={kpis.total} unit="lượt" color="#65B5FF" />
-          </Grid>
-          <Grid item xs={6} sm={3}>
             <KpiCard icon={<Speed />} label="Thời gian TB" value={kpis.avgDeliveryMin} unit="phút" color="#1976D2" />
-          </Grid>
-          <Grid item xs={6} sm={3}>
             <KpiCard icon={<TrendingUp />} label="Trạm nhận" value={kpis.destinationCount} unit="trạm" color="#FF9800" />
-          </Grid>
-          <Grid item xs={6} sm={3}>
             <KpiCard icon={<Schedule />} label="Uptime" value={robotState.isOnline ? '100' : '0'} unit="%" color="#0BDF50" />
-          </Grid>
-        </Grid>
+          </Box>
+
+          {/* Nút Điều khiển — luôn hiện, style như hình 2 */}
+          <Button
+            id="monitoring-control-btn"
+            variant="contained"
+            onClick={onControlAccess}
+            startIcon={<PrecisionManufacturing sx={{ fontSize: '20px !important' }} />}
+            sx={{
+              flex: 1,
+              minHeight: 98,
+              fontWeight: 800,
+              fontSize: '0.9rem',
+              px: 2.5,
+              borderRadius: 2,
+              gap: 1.5,
+              background: 'linear-gradient(135deg, #1976D2, #42A5F5)',
+              boxShadow: `0 4px 14px ${alpha('#1976D2', 0.3)}`,
+              color: '#ffffff',
+              '&:hover': {
+                background: 'linear-gradient(135deg, #1565C0, #1E88E5)',
+                boxShadow: `0 6px 18px ${alpha('#1976D2', 0.45)}`,
+                transform: 'translateY(-2px)',
+              },
+              '&:active': { transform: 'translateY(0)' },
+              transition: 'all 0.2s ease',
+            }}
+          >
+            Điều khiển
+          </Button>
+
+          {/* Nút Kỹ thuật — chỉ hiện với role tech, style như hình 2 */}
+          {currentUser?.role === USER_ROLES.TECH && (
+            <Button
+              id="monitoring-admin-btn"
+              variant="outlined"
+              onClick={() => navigateTo?.('admin')}
+              startIcon={<AdminPanelSettings sx={{ fontSize: '20px !important' }} />}
+              sx={{
+                flex: 1,
+                minHeight: 98,
+                fontWeight: 800,
+                fontSize: '0.9rem',
+                px: 2.5,
+                borderRadius: 2,
+                gap: 1.5,
+                borderColor: alpha('#E65100', 0.5),
+                borderWidth: '1.5px',
+                color: '#E65100',
+                bgcolor: 'background.paper',
+                '&:hover': {
+                  bgcolor: alpha('#FF9800', 0.08),
+                  borderColor: '#E65100',
+                  borderWidth: '1.5px',
+                  transform: 'translateY(-2px)',
+                  boxShadow: `0 6px 14px ${alpha('#E65100', 0.15)}`,
+                },
+                '&:active': { transform: 'translateY(0)' },
+                transition: 'all 0.2s ease',
+              }}
+            >
+              Kỹ thuật
+            </Button>
+          )}
+        </Box>
+
 
         <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: 'stretch' }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, justifyContent: 'space-between', flex: { sm: '1 1 0%' }, width: { xs: '100%', sm: '33.33%' } }}>
+          {/* ── Left column ────────────────────────────────────────── */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, justifyContent: 'flex-start', flex: { sm: '1 1 0%' }, width: { xs: '100%', sm: '33.33%' } }}>
+            {/* Cabin status card */}
             <Paper
               sx={{
                 p: 1.15,
                 bgcolor: alpha('#ffffff', 0.9),
                 borderLeft: `4px solid ${statusColor}`,
                 boxShadow: `0 10px 26px ${alpha('#111111', 0.12)}`,
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
               }}
             >
               <Typography
@@ -338,13 +375,14 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada }) {
               </Box>
             </Paper>
 
-            {/* ── ESP32 Cabin Sensor Panel ─────────────────────────────── */}
+            {/* ESP32 Cabin Sensor Panel */}
             <CabinSensorPanel
               sensorData={cabinSensorData}
               sensorHistory={sensorHistory}
             />
           </Box>
 
+          {/* ── Right column ───────────────────────────────────────── */}
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, flex: { sm: '2 1 0%' }, width: { xs: '100%', sm: '66.66%' } }}>
             <Paper
               sx={{

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState, useRef } from 'react';
+import { memo, useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import {
   Alert,
   Box,
@@ -32,7 +32,7 @@ import { useNotification } from '../contexts/NotificationContext';
 
 
 
-const ControlPage = memo(function ControlPage({ scada }) {
+const ControlPage = memo(function ControlPage({ scada, onComplete }) {
   const {
     stations,
     robotState,
@@ -54,6 +54,20 @@ const ControlPage = memo(function ControlPage({ scada }) {
     acknowledgeTask,
     plcState,
   } = scada;
+
+  // Track previous activeDispatchRoute to detect completion (active → null)
+  const prevRouteRef = useRef(null);
+  useEffect(() => {
+    const hadRoute = prevRouteRef.current !== null;
+    const hasRoute = activeDispatchRoute !== null && activeDispatchRoute !== undefined;
+    prevRouteRef.current = activeDispatchRoute ?? null;
+    // If route just disappeared (completed), go back to monitoring
+    if (hadRoute && !hasRoute && typeof onComplete === 'function') {
+      const timer = setTimeout(() => onComplete(), 1200);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [activeDispatchRoute, onComplete]);
 
   const notifications = useNotification();
 
@@ -78,7 +92,7 @@ const ControlPage = memo(function ControlPage({ scada }) {
   const canDispatch = scanList.length > 0 && missingDestinationCount === 0 && !maintenanceMode.enabled && !activeDispatchRoute;
   const activeRouteStop = activeDispatchRoute?.stops?.[activeDispatchRoute.currentStopIndex] || null;
   const isEStop = robotState.status === ROBOT_STATUS.ESTOP;
-  const canAppendSpecimensAtStop = Boolean(
+  const canAppendSpecimensAtStop = !isEStop && Boolean(
     activeDispatchRoute?.status === 'waiting_confirm' &&
     activeRouteStop &&
     (

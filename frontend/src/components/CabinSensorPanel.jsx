@@ -75,6 +75,10 @@ const EnvSensorCard = memo(function EnvSensorCard({ sensorData, isOnline, onClic
         transition: 'all 0.25s ease',
         position: 'relative',
         overflow: 'hidden',
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
         '&:hover': isOnline ? {
           transform: 'translateY(-2px)',
           boxShadow: `0 10px 24px ${alpha(hasAlert ? '#FF5722' : '#65B5FF', 0.22)}`,
@@ -215,6 +219,10 @@ const StabilitySensorCard = memo(function StabilitySensorCard({ sensorData, sens
         transition: 'all 0.25s ease',
         position: 'relative',
         overflow: 'hidden',
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
         '&:hover': isOnline ? {
           transform: 'translateY(-2px)',
           boxShadow: `0 10px 24px ${alpha(scoreColor, 0.2)}`,

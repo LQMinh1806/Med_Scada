@@ -59,7 +59,7 @@ export default function useOpcUaSocket() {
     robotStatus: null,
     robotStatusLabel: 'Chưa kết nối',
     cabinReady: true,    // Cabin_Ready flag from PLC (true=ready, false=busy lifting)
-    eStopActive: false,  // E-Stop_CMD từ PLC: true=đang dừng khẩn cấp (PLC gửi FALSE)
+    eStopActive: false,  // E-Stop_CMD từ PLC: true=đang dừng khẩn cấp (PLC gửi TRUE)
     isPlcConnected: false,
     isSocketConnected: false,
     // Station position sensors (I0.4–I0.7): cabin presence at each station
@@ -184,7 +184,7 @@ export default function useOpcUaSocket() {
     });
 
     // Trạng thái E-Stop từ PLC (đọc biến E-Stop_CMD)
-    // active=true nghĩa là PLC đang trong trạng thái dừng khẩn cấp (E-Stop_CMD=FALSE)
+    // active=true nghĩa là PLC đang trong trạng thái dừng khẩn cấp (E-Stop_CMD=TRUE)
     socket.on('plc:eStopStatus', (data) => {
       if (!data || typeof data !== 'object') return;
       setPlcState((prev) => ({
@@ -441,6 +441,6 @@ export default function useOpcUaSocket() {
       onCabinSensorRef,
       setOnCabinSensor,
     }),
-    [plcState, callCabin, confirmStation, confirmPickup, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
+    [plcState, callCabin, confirmStation, confirmStop, confirmPickup, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
   );
 }

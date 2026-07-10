@@ -209,7 +209,10 @@ export default function useScada() {
   // Hardware E-Stop logic moved to bottom
 
   // === Fallback HTTP polling for encoder data (khi Socket.io không hoạt động qua domain) ===
+  // FIX [BUG-01]: Chỉ chạy khi đã đăng nhập và tự dừng khi đăng xuất.
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     let active = true;
 
     const pollEncoder = async () => {
@@ -237,7 +240,7 @@ export default function useScada() {
       active = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [isAuthenticated]); // FIX [BUG-01]: dừng polling khi logout
 
   const toDateTimeText = useCallback((value) => {
     if (!value) return new Date().toLocaleString();
@@ -257,6 +260,9 @@ export default function useScada() {
     if (!isAuthenticated) {
       lastAppliedSyncTsRef.current = 0;
       authReconnectDoneRef.current = false;
+      // FIX [BUG-09]: Reset dedup Set khi đăng xuất để tránh bỏ sót sync payload
+      // sau khi đăng nhập lại (server có thể replay cùng msgId sau restart)
+      recentSyncIdsRef.current = new Set();
     }
   }, [isAuthenticated]);
 
@@ -1160,6 +1166,14 @@ export default function useScada() {
   const markRouteStopArrived = useCallback((metadata, target, arrivedTime) => {
     const route = activeDispatchRouteRef.current;
     if (!route || route.id !== metadata?.routeId) return false;
+
+    // FIX [BUG-02]: Guard chống race condition — nếu stop này đã được mark
+    // WAITING_CONFIRM (từ PLC sync effect hoặc route monitor effect), bỏ qua.
+    const currentStop = route.stops[metadata?.stopIndex];
+    if (currentStop?.status === ROUTE_STOP_STATUS.WAITING_CONFIRM) {
+      return false; // đã xử lý rồi, không mark lại
+    }
+
     const cleanedQueue = queueRef.current.filter((item) => !(
       item.metadata?.routeDelivery &&
       item.metadata.routeId === route.id &&
@@ -1283,13 +1297,16 @@ export default function useScada() {
       .then((callRes) => {
         if (!callRes?.ok) {
           addLog(`[PLC] Lỗi ghi Target_Station: ${callRes?.error || 'Unknown'}`, 'error');
-        } else {
-          addLog(`[PLC] Đã ghi Target_Station = ${firstStationNumber}`, 'info');
+          // FIX [BUG-07]: Không gửi Confirm_CMD1 nếu Target_Station chưa được ghi thành công.
+          // PLC sẽ nhận Confirm_CMD1=TRUE mà không biết đích đến — hành vi không xác định.
+          return Promise.resolve({ ok: false, skipped: true });
         }
-        // Bước 2: Gửi Confirm_CMD1 = TRUE (luôn gửi bất kể Target thành công hay không)
+        addLog(`[PLC] Đã ghi Target_Station = ${firstStationNumber}`, 'info');
+        // Bước 2: Ghi Target_Station thành công mới gửi Confirm_CMD1 = TRUE
         return opc.confirmStation();
       })
       .then((confirmRes) => {
+        if (confirmRes?.skipped) return; // target thất bại, đã log rồi
         if (!confirmRes?.ok) {
           addLog(`[PLC] Lỗi gửi Confirm_CMD1: ${confirmRes?.error || 'Unknown'}`, 'error');
         } else {
@@ -1983,13 +2000,18 @@ export default function useScada() {
     }));
   }, [addLog, buildSyncSnapshot, publishSyncSnapshot, stopAnimation, opc]);
 
+  // FIX [BUG-03/06]: Destructure các callback PLC ổn định từ opc trước khi dùng
+  // trong useCallback. Điều này ngăn opc (thay đổi mỗi khi plcState thay đổi)
+  // làm cho acknowledgeTask bị recreate không cần thiết.
+  const { releaseEStop: opcReleaseEStop, resetError: opcResetError } = opc;
+
   const acknowledgeTask = useCallback(() => {
     if (currentUser?.role !== USER_ROLES.TECH) {
       addLog('Chỉ kỹ thuật viên được nhả E-Stop và reset lỗi hệ thống', 'error');
       return;
     }
 
-    // FIX: Restore UI state IMMEDIATELY — don’t block behind PLC socket timeouts.
+    // FIX: Restore UI state IMMEDIATELY — don't block behind PLC socket timeouts.
     // ── 1. Instant UI recovery ──────────────────────────────────────────────────────
     setRobotState(prev => ({ ...prev, status: ROBOT_STATUS.READY }));
     addLog('Hệ thống đã được khôi phục sau Dừng khẩn cấp', 'success');
@@ -2009,7 +2031,7 @@ export default function useScada() {
     }, 300);
 
     // ── 3. Background PLC commands (fire-and-forget) ──────────────────────
-    opc.releaseEStop().then((res) => {
+    opcReleaseEStop().then((res) => {
       if (!res?.ok) {
         addLog(`Cảnh báo PLC: Nhả E-Stop không thành công (${res?.error || 'PLC offline'})`, 'error');
       }
@@ -2021,7 +2043,7 @@ export default function useScada() {
     // FIX [M5]: Track timer for cleanup on unmount
     ackResetTimerRef.current = setTimeout(() => {
       ackResetTimerRef.current = null;
-      opc.resetError().then((res) => {
+      opcResetError().then((res) => {
         if (!res?.ok) {
           addLog(`Cảnh báo PLC: Reset lỗi không thành công (${res?.error || 'PLC offline'})`, 'error');
         }
@@ -2029,7 +2051,7 @@ export default function useScada() {
         addLog(`Cảnh báo PLC: ${err?.message || 'Không kết nối được'}`, 'error');
       });
     }, 300);
-  }, [addLog, buildSyncSnapshot, currentUser, publishSyncSnapshot, opc]);
+  }, [addLog, buildSyncSnapshot, currentUser, publishSyncSnapshot, opcReleaseEStop, opcResetError]);
 
   // === Cleanup ===
   useEffect(() => {
@@ -2049,6 +2071,11 @@ export default function useScada() {
       if (logFlushTimerRef.current) {
         clearTimeout(logFlushTimerRef.current);
         logFlushTimerRef.current = null;
+      }
+      // FIX [BUG-14]: Clear scanFeedback timer để tránh setState trên unmounted component
+      if (scanFeedbackTimerRef.current) {
+        clearTimeout(scanFeedbackTimerRef.current);
+        scanFeedbackTimerRef.current = null;
       }
     };
   }, [stopAnimation]);

@@ -29,11 +29,11 @@ import useScada from './hooks/useScada';
 import useAudioAlerts from './hooks/useAudioAlerts';
 
 import LoginPage from './components/LoginPage';
-import HubPage from './components/HubPage';
 import MonitoringDisplay from './components/MonitoringDisplay';
 import ControlPage from './components/ControlPage';
 import AdminPage from './components/AdminPage';
 import AudioAlertControls from './components/AudioAlertControls';
+import ControlAuthDialog from './components/ControlAuthDialog';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 
@@ -106,20 +106,32 @@ const LiveClock = memo(function LiveClock() {
 /**
  * Page renderer — memoized to prevent unnecessary re-renders.
  */
-const PageContent = memo(function PageContent({ currentPage, navigateTo, scada }) {
+const PageContent = memo(function PageContent({ currentPage, navigateTo, scada, onControlAccess, onTransportComplete }) {
   const isTech = scada.currentUser?.role === USER_ROLES.TECH;
 
   switch (currentPage) {
-    case ROUTES.HUB:
-      return <HubPage navigateTo={navigateTo} currentUser={scada.currentUser} />;
     case ROUTES.MONITORING:
-      return <MonitoringDisplay scada={scada} />;
+      return (
+        <MonitoringDisplay
+          scada={scada}
+          navigateTo={navigateTo}
+          currentUser={scada.currentUser}
+          onControlAccess={onControlAccess}
+        />
+      );
     case ROUTES.CONTROL:
-      return <ControlPage scada={scada} />;
+      return <ControlPage scada={scada} onComplete={onTransportComplete} />;
     case ROUTES.ADMIN:
-      return isTech ? <AdminPage scada={scada} /> : <MonitoringDisplay scada={scada} />;
+      return isTech ? <AdminPage scada={scada} /> : <MonitoringDisplay scada={scada} navigateTo={navigateTo} currentUser={scada.currentUser} onControlAccess={onControlAccess} />;
     default:
-      return <HubPage navigateTo={navigateTo} currentUser={scada.currentUser} />;
+      return (
+        <MonitoringDisplay
+          scada={scada}
+          navigateTo={navigateTo}
+          currentUser={scada.currentUser}
+          onControlAccess={onControlAccess}
+        />
+      );
   }
 });
 
@@ -137,6 +149,7 @@ export default function App() {
   const scada = useScada();
   const [currentPage, setCurrentPage] = useState(ROUTES.LOGIN);
   const [sessionResolved, setSessionResolved] = useState(false);
+  const [controlAuthOpen, setControlAuthOpen] = useState(false);
   const notifications = useNotification();
   const audioAlerts = useAudioAlerts();
   const { notifyCabinArrived } = notifications;
@@ -166,7 +179,26 @@ export default function App() {
   const navigateTo = useCallback((page) => setCurrentPage(page), []);
 
   const handleLogin = useCallback(() => {
-    setCurrentPage(ROUTES.HUB);
+    setCurrentPage(ROUTES.MONITORING);
+  }, []);
+
+  // Control page access
+  const handleControlAccess = useCallback(() => {
+    setControlAuthOpen(true);
+  }, []);
+
+  const handleControlAuthSuccess = useCallback(() => {
+    setControlAuthOpen(false);
+    setCurrentPage(ROUTES.CONTROL);
+  }, []);
+
+  const handleControlAuthClose = useCallback(() => {
+    setControlAuthOpen(false);
+  }, []);
+
+  // Auto-return to monitoring after transport completes
+  const handleTransportComplete = useCallback(() => {
+    setCurrentPage(ROUTES.MONITORING);
   }, []);
 
   // Fix: destructure stable references to avoid depending on entire scada object
@@ -209,7 +241,7 @@ export default function App() {
             stationId: result.user.stationId ?? null,
           });
           setIsAuthenticated(true);
-          setCurrentPage((prev) => (prev === ROUTES.LOGIN ? ROUTES.HUB : prev));
+          setCurrentPage((prev) => (prev === ROUTES.LOGIN ? ROUTES.MONITORING : prev));
         }
       } catch {
         // Ignore restore-session failures; login screen remains available.
@@ -225,7 +257,7 @@ export default function App() {
     };
   }, [setCurrentUser, setIsAuthenticated]);
 
-  const handleGoHome = useCallback(() => navigateTo(ROUTES.HUB), [navigateTo]);
+  const handleGoHome = useCallback(() => navigateTo(ROUTES.MONITORING), [navigateTo]);
 
   // Memoize the system status indicator
   const systemStatus = useMemo(() => {
@@ -263,7 +295,8 @@ export default function App() {
       {/* === Top bar === */}
       <AppBar position="static" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar sx={{ gap: 1, minHeight: { xs: 64, sm: 72 } }}>
-          {currentPage !== ROUTES.HUB && (
+          {/* Back button: show on CONTROL and ADMIN pages only */}
+          {(currentPage === ROUTES.CONTROL || currentPage === ROUTES.ADMIN) && (
             <Fade in>
               <IconButton
                 color="inherit"
@@ -274,7 +307,7 @@ export default function App() {
                     bgcolor: 'rgba(17, 17, 17, 0.06)',
                   },
                 }}
-                aria-label="Về trang chủ"
+                aria-label="Về trang giám sát"
               >
                 <ArrowBack />
               </IconButton>
@@ -310,7 +343,7 @@ export default function App() {
             >
               HỆ THỐNG ĐIỀU KHIỂN VÀ QUẢN LÝ CABIN VẬN CHUYỂN TỰ ĐỘNG
             </Typography>
-            {currentPage !== ROUTES.HUB && (
+            {currentPage !== ROUTES.MONITORING && (
               <Typography
                 sx={{
                   fontSize: '0.65rem',
@@ -414,9 +447,19 @@ export default function App() {
             currentPage={currentPage}
             navigateTo={navigateTo}
             scada={scada}
+            onControlAccess={handleControlAccess}
+            onTransportComplete={handleTransportComplete}
           />
         </Container>
       </Box>
+
+      {/* === Control Auth Dialog === */}
+      <ControlAuthDialog
+        open={controlAuthOpen}
+        onClose={handleControlAuthClose}
+        onSuccess={handleControlAuthSuccess}
+        scada={scada}
+      />
     </ThemeProvider>
   );
 }

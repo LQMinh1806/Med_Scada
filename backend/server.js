@@ -181,7 +181,10 @@ async function startServer() {
       };
 
       // Actively broadcast to bypass Windows Firewall inbound blocking
-      // Sending to specific subnet broadcast IPs guarantees correct routing on Windows
+      // Sending to specific subnet broadcast IPs guarantees correct routing on Windows.
+      // NOTE: Server broadcasts to port 3030 (same as its listen port). Self-received
+      // packets are harmless — the message handler only responds to 'MEDSCADA_DISCOVER',
+      // and the server's own broadcast payload is 'MEDSCADA_SERVER:PORT', so no loop.
       setInterval(() => {
         const reply = `MEDSCADA_SERVER:${PORT}`;
         const bcastAddrs = getBroadcastAddresses();
