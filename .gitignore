@@ -32,3 +32,5 @@ lint_output.txt
 .env
 !.env.example
 
+# Database backups
+scripts/backups/

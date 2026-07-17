@@ -84,17 +84,17 @@
 #define RELAY_REV_PIN   33     // GPIO 33: Tiếp điểm NC relay nghịch (HIGH = relay đang hút)
 
 // ── Encoder — thông số vật lý (hiệu chỉnh thực tế) ──────────────────────────
-// Đo thực tế: cabin đi từ đầu đến cuối ray 412.3cm mất 17 giây
-// Serial log: ~74 xung/giây → tổng ray = 74 × 17 = ~1254 xung
-// CM/xung = 412.3cm / 1254 = 0.329cm  →  PULSES_PER_REV = 19.0 / 0.329 ≈ 58
-#define ENCODER_PULSES_PER_REV  80
-#define ENCODER_CM_PER_REV      19.0f
-#define CM_PER_PULSE            (ENCODER_CM_PER_REV / ENCODER_PULSES_PER_REV)  // ≈ 0.3276 cm
+// Đo thực tế: cabin đi từ đầu đến cuối ray 369cm mất 34.5 giây
+// Serial log: ~45 xung/giây → tổng ray = 45 × 34.5 = ~1553 xung
+// CM/xung = 369cm / 1553 = 0.2376cm  →  PULSES_PER_REV = 19.0 / 0.2376 ≈ 80
+#define ENCODER_PULSES_PER_REV  42
+#define ENCODER_CM_PER_REV      9.81f
+#define CM_PER_PULSE            (ENCODER_CM_PER_REV / ENCODER_PULSES_PER_REV)  // ≈ 0.2375 cm
 
 // ── Chiều dài đường ray ──────────────────────────────────────────────
-// Tổng chiều dài ray từ ST-01 đến ST-04 = 4,123 m = 412,3 cm
-#define RAIL_LENGTH_CM    412.3f
-#define RAIL_TOTAL_PULSES ((long)(RAIL_LENGTH_CM / CM_PER_PULSE))  // ≈ 1258 xung
+// Tổng chiều dài ray từ ST-01 đến ST-04 = 3.69 m = 369 cm
+#define RAIL_LENGTH_CM    369.0f
+#define RAIL_TOTAL_PULSES ((long)(RAIL_LENGTH_CM / CM_PER_PULSE))  // ≈ 1553 xung
 
 // ── Cấu hình timing (ms) ───────────────────────────────────────────────────
 #define SEND_INTERVAL_MS      2000   // Gửi dữ liệu đầy đủ mỗi 2 giây
@@ -200,7 +200,7 @@ void IRAM_ATTR encoderISR() {
     encoderPulseCount--;     // Cabin đi LÙI
   }
 
-  // Giới hạn tuyệt đối quãng đường từ 0 đến 4,123m (0 đến RAIL_TOTAL_PULSES)
+  // Giới hạn tuyệt đối quãng đường từ 0 đến 3.69m (0 đến RAIL_TOTAL_PULSES)
   if (encoderPulseCount < 0) {
     encoderPulseCount = 0;
   } else if (encoderPulseCount > RAIL_TOTAL_PULSES) {

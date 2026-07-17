@@ -14,19 +14,19 @@ export const ROUTES = {
 
 // === Rail & Station topology ===
 export const RAIL_POINTS = [
-  { x: 150, y: 100 },   // 0: Trạm Trung Tâm (Đầu đoạn nằm ngang trên cùng)
+  { x: 150, y: 100 },   // 0: Trạm Cấp Cứu (EM) — Đầu đoạn nằm ngang trên cùng
   { x: 350, y: 100 },   // 1: Cuối đoạn nằm ngang trên cùng
-  { x: 550, y: 210 },   // 2: Trạm Xét Nghiệm (Đầu đoạn nằm ngang ở giữa)
-  { x: 1050, y: 210 },  // 3: Trạm Vi Sinh (Cuối đoạn nằm ngang ở giữa)
+  { x: 550, y: 210 },   // 2: Trạm Khám Bệnh (OPD) — Đầu đoạn nằm ngang giữa
+  { x: 1050, y: 210 },  // 3: Trạm Hồi Sức Tích Cực (ICU) — Cuối đoạn nằm ngang giữa
   { x: 1250, y: 320 },  // 4: Đầu đoạn nằm ngang dưới cùng
-  { x: 1450, y: 320 },  // 5: Trạm PCR (Cuối đoạn nằm ngang dưới cùng)
+  { x: 1450, y: 320 },  // 5: Trạm Xét Nghiệm (LAB) — Cuối đoạn nằm ngang dưới cùng
 ];
 
 export const STATIONS = [
-  { id: 'ST-01', name: 'Trung Tâm', idx: 0, samples: 0, ready: true },
-  { id: 'ST-02', name: 'Xét Nghiệm', idx: 2, samples: 0, ready: true },
-  { id: 'ST-03', name: 'Vi Sinh', idx: 3, samples: 0, ready: true },
-  { id: 'ST-04', name: 'PCR', idx: 5, samples: 0, ready: true },
+  { id: 'ST-01', name: 'Cấp Cứu', idx: 0, samples: 0, ready: true },
+  { id: 'ST-02', name: 'Khám Bệnh', idx: 2, samples: 0, ready: true },
+  { id: 'ST-03', name: 'Hồi Sức Tích Cực', idx: 3, samples: 0, ready: true },
+  { id: 'ST-04', name: 'Xét Nghiệm', idx: 5, samples: 0, ready: true },
 ];
 
 // === Default users ===

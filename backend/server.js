@@ -37,6 +37,8 @@ import createDataRoutes from './routes/data.js';
 import createFingerprintRoutes from './routes/fingerprint.js';
 import createSpecimenRoutes from './routes/specimens.js';
 import createSensorRoutes from './routes/sensors.js';
+import { getSavedSheetId, syncGoogleSheet } from './services/sheetSync.js';
+import { scheduleDailyBackup } from './services/backupService.js';
 
 // ── Initialize core services ─────────────────────────────────────────────────
 const { PrismaClient } = prismaPkg;
@@ -209,6 +211,26 @@ async function startServer() {
     for (const address of networkAddresses) {
       console.log(`SCADA backend LAN: http://${address}:${PORT}`);
     }
+
+    // ── Thiết lập tự động đồng bộ ngầm Google Sheets định kỳ (mỗi 5 giây) ──
+    console.log('[SheetSync] Đang khởi tạo dịch vụ tự động đồng bộ Google Sheets (5 giây/lần)...');
+    setInterval(async () => {
+      const savedSheetId = getSavedSheetId();
+      if (savedSheetId) {
+        const result = await syncGoogleSheet(prisma, savedSheetId);
+        if (result.success) {
+          // Chỉ hiển thị log khi có sự thay đổi thực sự được ghi nhận
+          if (result.imported > 0) {
+            console.log(`[SheetSync] Tự động cập nhật thành công: Đã import/update ${result.imported} mẫu do có sự thay đổi trên Google Sheets.`);
+          }
+        } else {
+          console.error(`[SheetSync] Tự động đồng bộ không thành công: ${result.message}`);
+        }
+      }
+    }, 5000); // 5 giây
+
+    // ── Khởi động dịch vụ tự động Backup Database định kỳ lên Google Drive ──
+    scheduleDailyBackup();
   });
 }
 

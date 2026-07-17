@@ -10,6 +10,7 @@ import XLSX from 'xlsx';
 import { toDbPriority, toApiPriority } from '../config.js';
 import { requireAuth, requireRole, getRequesterId } from '../middleware/auth.js';
 import { broadcastSyncRequired } from '../services/sync.js';
+import { syncGoogleSheet, saveSheetConfig } from '../services/sheetSync.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const NON_SCANNABLE_SPECIMEN_STATUSES = new Set(['IN_TRANSIT', 'COMPLETED']);
@@ -212,6 +213,39 @@ export default function createSpecimenRoutes(prisma) {
     } catch (error) {
       console.error('IMPORT_SPECIMENS_ERROR', error);
       return res.status(500).json({ message: 'Lỗi máy chủ khi import.' });
+    }
+  });
+
+  // ── POST /api/specimens/sync-sheet — Sync from public Google Sheet ──────────
+  router.post('/sync-sheet', requireAuth, requireRole('tech'), async (req, res) => {
+    try {
+      const { sheetId } = req.body ?? {};
+      if (!sheetId || typeof sheetId !== 'string' || !sheetId.trim()) {
+        return res.status(400).json({ message: 'Thiếu sheetId trong request body.' });
+      }
+
+      // Gọi service đồng bộ
+      const syncResult = await syncGoogleSheet(prisma, sheetId);
+
+      if (!syncResult.success) {
+        return res.status(400).json({
+          message: syncResult.message || 'Đồng bộ thất bại.',
+          errors: syncResult.errors,
+        });
+      }
+
+      // Lưu lại cấu hình để tự động đồng bộ ngầm định kỳ
+      saveSheetConfig(sheetId);
+
+      return res.status(201).json({
+        message: `Đã đồng bộ thành công ${syncResult.imported} mẫu bệnh phẩm.`,
+        imported: syncResult.imported,
+        errors: syncResult.errors.length > 0 ? syncResult.errors : undefined,
+        specimens: syncResult.specimens.map(mapSpecimenForApi),
+      });
+    } catch (error) {
+      console.error('SYNC_SHEET_ERROR', error);
+      return res.status(500).json({ message: 'Lỗi máy chủ khi đồng bộ Google Sheets.' });
     }
   });
 

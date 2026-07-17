@@ -7,6 +7,8 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Database role/priority/status mappings ────────────────────────────────────
+export const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1FE7f5cyQa7aiA1lCJCl_pcyJSpfvlOC28zekXlxMbwI';
+
 export const DB_ROLE = {
   tech: 'TECH',
   operator: 'OPERATOR',
@@ -30,10 +32,10 @@ export const DB_TRANSPORT_STATUS = {
 };
 
 export const DEFAULT_STATIONS = [
-  { id: 'ST-01', name: 'Trung Tâm', locationIndex: 0 },
-  { id: 'ST-02', name: 'Xét Nghiệm', locationIndex: 2 },
-  { id: 'ST-03', name: 'Vi Sinh', locationIndex: 3 },
-  { id: 'ST-04', name: 'PCR', locationIndex: 5 },
+  { id: 'ST-01', name: 'Cấp Cứu', locationIndex: 0 },
+  { id: 'ST-02', name: 'Khám Bệnh', locationIndex: 2 },
+  { id: 'ST-03', name: 'Hồi Sức Tích Cực', locationIndex: 3 },
+  { id: 'ST-04', name: 'Xét Nghiệm', locationIndex: 5 },
 ];
 
 // ── Utility converters ───────────────────────────────────────────────────────

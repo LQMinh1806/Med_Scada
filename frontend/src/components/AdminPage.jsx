@@ -1,54 +1,27 @@
+// ══════════════════════════════════════════════════════════════════════════════
+// AdminPage.jsx
+// ──────────────────────────────────────────────────────────────────────────────
+// System Admin dashboard: system logs, account management, persistent data audit.
+// ══════════════════════════════════════════════════════════════════════════════
+
 import { memo, useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import {
-  Alert,
-  Box,
-  Button,
-  Card,
-  Chip,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  FormControl,
-  FormControlLabel,
-  IconButton,
-  InputLabel,
-  MenuItem,
-  Paper,
-  Select,
-  Switch,
-  Tab,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-  Tabs,
-  TextField,
-  Tooltip,
-  Typography,
-  alpha,
-  CircularProgress,
-  LinearProgress,
-  keyframes,
+  Alert, Box, Button, Card, Chip, Dialog, DialogActions, DialogContent,
+  DialogTitle, FormControl, FormControlLabel, IconButton, InputLabel,
+  MenuItem, Paper, Select, Switch, Tab, Table, TableBody, TableCell,
+  TableHead, TableRow, Tabs, TextField, Tooltip, Typography, alpha,
+  CircularProgress, LinearProgress, keyframes,
 } from '@mui/material';
 import {
-  BuildCircle,
-  Delete,
-  History,
-  Fingerprint as FingerprintIcon,
-  Close as CloseIcon,
-  CheckCircleOutlineOutlined as CheckCircleOutline,
+  BuildCircle, Delete, History, Fingerprint as FingerprintIcon,
+  Close as CloseIcon, CheckCircleOutlineOutlined as CheckCircleOutline,
   ErrorOutlineOutlined as ErrorOutline,
 } from '@mui/icons-material';
 
 import TabPanel from './TabPanel';
 import TransportHistoryDialog from './TransportHistoryDialog';
-import ExcelImportPanel from './ExcelImportPanel';
 import { USER_ROLES, STATIONS } from '../constants';
 
-// FIX: Align with useOpcUaSocket.js — empty string routes to current origin via Vite proxy
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? '';
 const ENROLL_TIMEOUT_MS = 60_000;
 
 const pulseRing = keyframes`
@@ -108,17 +81,11 @@ const maintenanceSwitchSx = {
   },
 };
 
-/**
- * Pure utility — extract outside component to avoid unnecessary useCallback.
- */
 function toTimeValue(value) {
   const parsed = new Date(value || '').getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-/**
- * System logs table sub-component.
- */
 const SystemLogsTable = memo(function SystemLogsTable({ logs }) {
   return (
     <Paper sx={{ p: { xs: 2, md: 3 }, borderRadius: 3, border: `1px solid ${alpha('#1976D2', 0.15)}` }}>
@@ -139,15 +106,7 @@ const SystemLogsTable = memo(function SystemLogsTable({ logs }) {
             {logs.map((log) => (
               <TableRow key={log.id} hover>
                 <TableCell>
-                  <Typography
-                    variant="body2"
-                    fontWeight={600}
-                    sx={{
-                      fontFamily: '"JetBrains Mono", monospace',
-                      fontSize: '0.78rem',
-                      color: 'text.secondary',
-                    }}
-                  >
+                  <Typography variant="body2" fontWeight={600} sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.78rem', color: 'text.secondary' }}>
                     {log.id}
                   </Typography>
                 </TableCell>
@@ -160,24 +119,9 @@ const SystemLogsTable = memo(function SystemLogsTable({ logs }) {
                     sx={{
                       fontWeight: 700,
                       fontSize: '0.7rem',
-                      bgcolor:
-                        log.type === 'error'
-                          ? alpha('#FF4D6A', 0.12)
-                          : log.type === 'success'
-                            ? alpha('#36D399', 0.12)
-                            : alpha('#0A7AFF', 0.12),
-                      color:
-                        log.type === 'error'
-                          ? '#FF4D6A'
-                          : log.type === 'success'
-                            ? '#36D399'
-                            : '#4DA3FF',
-                      border: `1px solid ${log.type === 'error'
-                        ? alpha('#FF4D6A', 0.15)
-                        : log.type === 'success'
-                          ? alpha('#36D399', 0.15)
-                          : alpha('#0A7AFF', 0.15)
-                        }`,
+                      bgcolor: log.type === 'error' ? alpha('#FF4D6A', 0.12) : log.type === 'success' ? alpha('#36D399', 0.12) : alpha('#0A7AFF', 0.12),
+                      color: log.type === 'error' ? '#FF4D6A' : log.type === 'success' ? '#36D399' : '#4DA3FF',
+                      border: `1px solid ${log.type === 'error' ? alpha('#FF4D6A', 0.15) : log.type === 'success' ? alpha('#36D399', 0.15) : alpha('#0A7AFF', 0.15)}`,
                     }}
                   />
                 </TableCell>
@@ -190,16 +134,8 @@ const SystemLogsTable = memo(function SystemLogsTable({ logs }) {
   );
 });
 
-/**
- * User management table sub-component.
- */
 const UserManagementTable = memo(function UserManagementTable({
-  users,
-  onToggleActive,
-  onUpdateRole,
-  onUpdateStation,
-  onRemove,
-  onEnrollFingerprint,
+  users, onToggleActive, onUpdateRole, onUpdateStation, onRemove, onEnrollFingerprint,
 }) {
   return (
     <Paper sx={{ p: { xs: 2, md: 3 }, borderRadius: 3, border: `1px solid ${alpha('#1976D2', 0.15)}` }}>
@@ -229,12 +165,7 @@ const UserManagementTable = memo(function UserManagementTable({
                 <TableCell sx={{ color: 'text.secondary' }}>{user.fullname}</TableCell>
                 <TableCell sx={{ width: 180 }}>
                   <FormControl size="small" fullWidth>
-                    <Select
-                      value={user.role}
-                      onChange={(event) =>
-                        onUpdateRole(user.username, event.target.value)
-                      }
-                    >
+                    <Select value={user.role} onChange={(event) => onUpdateRole(user.username, event.target.value)}>
                       <MenuItem value={USER_ROLES.TECH}>Kỹ thuật viên</MenuItem>
                       <MenuItem value={USER_ROLES.OPERATOR}>Vận hành viên</MenuItem>
                     </Select>
@@ -243,11 +174,7 @@ const UserManagementTable = memo(function UserManagementTable({
                 <TableCell sx={{ width: 180 }}>
                   {user.role === USER_ROLES.OPERATOR ? (
                     <FormControl size="small" fullWidth>
-                      <Select
-                        value={user.stationId || ''}
-                        displayEmpty
-                        onChange={(event) => onUpdateStation(user.username, event.target.value)}
-                      >
+                      <Select value={user.stationId || ''} displayEmpty onChange={(event) => onUpdateStation(user.username, event.target.value)}>
                         <MenuItem value=""><em>(Tất cả)</em></MenuItem>
                         {STATIONS.map((station) => (
                           <MenuItem key={station.id} value={station.id}>
@@ -257,34 +184,20 @@ const UserManagementTable = memo(function UserManagementTable({
                       </Select>
                     </FormControl>
                   ) : (
-                    <Typography variant="body2" color="text.secondary">
-                      Toàn quyền
-                    </Typography>
+                    <Typography variant="body2" color="text.secondary">Toàn quyền</Typography>
                   )}
                 </TableCell>
                 <TableCell>
-                  <Switch
-                    checked={user.active}
-                    onChange={() => onToggleActive(user.username)}
-                    color="primary"
-                  />
+                  <Switch checked={user.active} onChange={() => onToggleActive(user.username)} color="primary" />
                 </TableCell>
                 <TableCell>
                   <Tooltip title={user.fingerprintId ? "Cập nhật vân tay" : "Đăng ký vân tay"}>
-                    <IconButton
-                      size="small"
-                      color={user.fingerprintId ? "success" : "primary"}
-                      onClick={() => onEnrollFingerprint(user)}
-                    >
+                    <IconButton size="small" color={user.fingerprintId ? "success" : "primary"} onClick={() => onEnrollFingerprint(user)}>
                       <FingerprintIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Xóa tài khoản">
-                    <IconButton
-                      size="small"
-                      color="error"
-                      onClick={() => onRemove(user.username)}
-                    >
+                    <IconButton size="small" color="error" onClick={() => onRemove(user.username)}>
                       <Delete fontSize="small" />
                     </IconButton>
                   </Tooltip>
@@ -298,9 +211,6 @@ const UserManagementTable = memo(function UserManagementTable({
   );
 });
 
-/**
- * New user creation form sub-component.
- */
 const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
   const [newUser, setNewUser] = useState(INITIAL_NEW_USER);
 
@@ -308,80 +218,36 @@ const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
     setNewUser((prev) => ({ ...prev, [field]: value }));
   }, []);
 
-  const handleSubmit = useCallback(
-    async (event) => {
-      event.preventDefault();
-      const success = await onCreateUser({
-        username: newUser.username.trim(),
-        password: newUser.password,
-        fullname: newUser.fullname.trim(),
-        role: newUser.role,
-        stationId: newUser.role === USER_ROLES.OPERATOR ? (newUser.stationId || null) : null,
-      });
-      if (success) {
-        setNewUser(INITIAL_NEW_USER);
-      }
-    },
-    [newUser, onCreateUser]
-  );
+  const handleSubmit = useCallback(async (event) => {
+    event.preventDefault();
+    const success = await onCreateUser({
+      username: newUser.username.trim(),
+      password: newUser.password,
+      fullname: newUser.fullname.trim(),
+      role: newUser.role,
+      stationId: newUser.role === USER_ROLES.OPERATOR ? (newUser.stationId || null) : null,
+    });
+    if (success) {
+      setNewUser(INITIAL_NEW_USER);
+    }
+  }, [newUser, onCreateUser]);
 
   return (
-    <Card
-      variant="outlined"
-      sx={{
-        maxWidth: 520,
-        mx: 'auto',
-        p: 2.5,
-        borderRadius: 3,
-        borderColor: alpha('#1976D2', 0.15),
-      }}
-    >
+    <Card variant="outlined" sx={{ maxWidth: 520, mx: 'auto', p: 2.5, borderRadius: 3, borderColor: alpha('#1976D2', 0.15) }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom sx={{ color: 'text.primary' }}>
         CẤP TÀI KHOẢN HỆ THỐNG
       </Typography>
       <Box component="form" onSubmit={handleSubmit} noValidate autoComplete="off">
-        <TextField
-          fullWidth
-          label="Họ và Tên"
-          margin="normal"
-          required
-          value={newUser.fullname}
-          onChange={(e) => setField('fullname', e.target.value)}
-          autoComplete="off"
-        />
-        <TextField
-          fullWidth
-          label="Mã Nhân Viên (Username)"
-          margin="normal"
-          required
-          value={newUser.username}
-          onChange={(e) => setField('username', e.target.value)}
-          autoComplete="off"
-        />
-        <TextField
-          fullWidth
-          label="Mật khẩu khởi tạo"
-          type="password"
-          margin="normal"
-          required
-          value={newUser.password}
-          onChange={(e) => setField('password', e.target.value)}
-          autoComplete="off"
-        />
+        <TextField fullWidth label="Họ và Tên" margin="normal" required value={newUser.fullname} onChange={(e) => setField('fullname', e.target.value)} autoComplete="off" />
+        <TextField fullWidth label="Mã Nhân Viên (Username)" margin="normal" required value={newUser.username} onChange={(e) => setField('username', e.target.value)} autoComplete="off" />
+        <TextField fullWidth label="Mật khẩu khởi tạo" type="password" margin="normal" required value={newUser.password} onChange={(e) => setField('password', e.target.value)} autoComplete="off" />
         <FormControl fullWidth margin="normal" size="small" required>
           <InputLabel>Vai trò hệ thống</InputLabel>
-          <Select
-            value={newUser.role}
-            label="Vai trò hệ thống"
-            onChange={(e) => {
-              const newRole = e.target.value;
-              setField('role', newRole);
-              // Clear stationId when switching to tech
-              if (newRole !== USER_ROLES.OPERATOR) {
-                setField('stationId', '');
-              }
-            }}
-          >
+          <Select value={newUser.role} label="Vai trò hệ thống" onChange={(e) => {
+            const newRole = e.target.value;
+            setField('role', newRole);
+            if (newRole !== USER_ROLES.OPERATOR) setField('stationId', '');
+          }}>
             <MenuItem value={USER_ROLES.OPERATOR}>Vận hành viên (Giám sát & Điều khiển)</MenuItem>
             <MenuItem value={USER_ROLES.TECH}>Kỹ thuật viên (Toàn quyền)</MenuItem>
           </Select>
@@ -389,27 +255,15 @@ const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
         {newUser.role === USER_ROLES.OPERATOR && (
           <FormControl fullWidth margin="normal" size="small">
             <InputLabel>Trạm làm việc</InputLabel>
-            <Select
-              value={newUser.stationId}
-              label="Trạm làm việc"
-              onChange={(e) => setField('stationId', e.target.value)}
-            >
+            <Select value={newUser.stationId} label="Trạm làm việc" onChange={(e) => setField('stationId', e.target.value)}>
               <MenuItem value=""><em>Không giới hạn (tất cả trạm)</em></MenuItem>
               {STATIONS.map((st) => (
-                <MenuItem key={st.id} value={st.id}>
-                  {st.name} ({st.id})
-                </MenuItem>
+                <MenuItem key={st.id} value={st.id}>{st.name} ({st.id})</MenuItem>
               ))}
             </Select>
           </FormControl>
         )}
-        <Button
-          type="submit"
-          variant="contained"
-          color="primary"
-          fullWidth
-          sx={{ mt: 1.5, py: 0.8, fontWeight: 800 }}
-        >
+        <Button type="submit" variant="contained" color="primary" fullWidth sx={{ mt: 1.5, py: 0.8, fontWeight: 800 }}>
           THÊM NHÂN SỰ
         </Button>
       </Box>
@@ -417,9 +271,6 @@ const CreateUserForm = memo(function CreateUserForm({ onCreateUser }) {
   );
 });
 
-/**
- * Persisted data viewer for technical users.
- */
 const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState('');
@@ -435,7 +286,6 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
 
   const handleRefresh = useCallback(async () => {
     if (typeof scada.hydratePersistedData !== 'function') return;
-
     setRefreshError('');
     setIsRefreshing(true);
     try {
@@ -466,9 +316,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
     const list = [...scada.scannedSpecimens];
     const direction = scannedSortOrder === 'asc' ? 1 : -1;
     return list.sort((a, b) => {
-      if (scannedSortBy === 'scanTime') {
-        return (toTimeValue(a.scanTime) - toTimeValue(b.scanTime)) * direction;
-      }
+      if (scannedSortBy === 'scanTime') return (toTimeValue(a.scanTime) - toTimeValue(b.scanTime)) * direction;
       const left = String(a[scannedSortBy] || '').toLowerCase();
       const right = String(b[scannedSortBy] || '').toLowerCase();
       return left.localeCompare(right) * direction;
@@ -490,53 +338,21 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
 
   return (
     <Paper sx={{ p: { xs: 2, md: 3 }, borderRadius: 3, border: `1px solid ${alpha('#1976D2', 0.15)}` }}>
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 1,
-          mb: 1,
-        }}
-      >
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyBox: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1, justifyContent: 'space-between' }}>
         <Typography variant="subtitle1" fontWeight={800} sx={{ color: 'text.primary' }}>
           DỮ LIỆU ĐÃ LƯU TRÊN HỆ THỐNG
         </Typography>
-        <Button
-          variant="outlined"
-          size="small"
-          onClick={handleRefresh}
-          disabled={isRefreshing}
-          sx={{ fontWeight: 700 }}
-        >
+        <Button variant="outlined" size="small" onClick={handleRefresh} disabled={isRefreshing} sx={{ fontWeight: 700 }}>
           {isRefreshing ? 'Đang đồng bộ...' : 'Làm mới từ Database'}
         </Button>
       </Box>
 
-      {refreshError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {refreshError}
-        </Alert>
-      )}
+      {refreshError && <Alert severity="error" sx={{ mb: 2 }}>{refreshError}</Alert>}
 
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(180px, 1fr))' },
-          gap: 1,
-          mb: 2,
-        }}
-      >
-        <Button variant="outlined" onClick={() => setIsUsersOpen(true)} sx={{ fontWeight: 700 }}>
-          Xem người dùng
-        </Button>
-        <Button variant="outlined" onClick={() => setIsScannedOpen(true)} sx={{ fontWeight: 700 }}>
-          Xem mẫu đã quét
-        </Button>
-        <Button variant="outlined" onClick={() => setIsTransportedOpen(true)} sx={{ fontWeight: 700 }}>
-          Xem vận chuyển đã lưu
-        </Button>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(180px, 1fr))' }, gap: 1, mb: 2 }}>
+        <Button variant="outlined" onClick={() => setIsUsersOpen(true)} sx={{ fontWeight: 700 }}>Xem người dùng</Button>
+        <Button variant="outlined" onClick={() => setIsScannedOpen(true)} sx={{ fontWeight: 700 }}>Xem mẫu đã quét</Button>
+        <Button variant="outlined" onClick={() => setIsTransportedOpen(true)} sx={{ fontWeight: 700 }}>Xem vận chuyển đã lưu</Button>
       </Box>
 
       <Dialog open={isUsersOpen} onClose={closeUsersDialog} fullWidth maxWidth="md">
@@ -545,11 +361,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
             <FormControl size="small" sx={{ minWidth: 180 }}>
               <InputLabel>Sắp xếp theo</InputLabel>
-              <Select
-                value={usersSortBy}
-                label="Sắp xếp theo"
-                onChange={(event) => setUsersSortBy(event.target.value)}
-              >
+              <Select value={usersSortBy} label="Sắp xếp theo" onChange={(event) => setUsersSortBy(event.target.value)}>
                 <MenuItem value="id">ID</MenuItem>
                 <MenuItem value="username">Username</MenuItem>
                 <MenuItem value="fullname">Họ tên</MenuItem>
@@ -558,11 +370,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Thứ tự</InputLabel>
-              <Select
-                value={usersSortOrder}
-                label="Thứ tự"
-                onChange={(event) => setUsersSortOrder(event.target.value)}
-              >
+              <Select value={usersSortOrder} label="Thứ tự" onChange={(event) => setUsersSortOrder(event.target.value)}>
                 <MenuItem value="asc">Tăng dần</MenuItem>
                 <MenuItem value="desc">Giảm dần</MenuItem>
               </Select>
@@ -593,9 +401,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
             </Table>
           </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={closeUsersDialog}>Đóng</Button>
-        </DialogActions>
+        <DialogActions><Button onClick={closeUsersDialog}>Đóng</Button></DialogActions>
       </Dialog>
 
       <Dialog open={isScannedOpen} onClose={closeScannedDialog} fullWidth maxWidth="lg">
@@ -604,11 +410,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
             <FormControl size="small" sx={{ minWidth: 180 }}>
               <InputLabel>Sắp xếp theo</InputLabel>
-              <Select
-                value={scannedSortBy}
-                label="Sắp xếp theo"
-                onChange={(event) => setScannedSortBy(event.target.value)}
-              >
+              <Select value={scannedSortBy} label="Sắp xếp theo" onChange={(event) => setScannedSortBy(event.target.value)}>
                 <MenuItem value="scanTime">Thời gian quét</MenuItem>
                 <MenuItem value="barcode">Mã mẫu</MenuItem>
                 <MenuItem value="patientName">Tên bệnh nhân</MenuItem>
@@ -618,11 +420,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Thứ tự</InputLabel>
-              <Select
-                value={scannedSortOrder}
-                label="Thứ tự"
-                onChange={(event) => setScannedSortOrder(event.target.value)}
-              >
+              <Select value={scannedSortOrder} label="Thứ tự" onChange={(event) => setScannedSortOrder(event.target.value)}>
                 <MenuItem value="asc">Tăng dần</MenuItem>
                 <MenuItem value="desc">Giảm dần</MenuItem>
               </Select>
@@ -655,9 +453,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
             </Table>
           </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={closeScannedDialog}>Đóng</Button>
-        </DialogActions>
+        <DialogActions><Button onClick={closeScannedDialog}>Đóng</Button></DialogActions>
       </Dialog>
 
       <Dialog open={isTransportedOpen} onClose={closeTransportedDialog} fullWidth maxWidth="lg">
@@ -666,11 +462,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
             <FormControl size="small" sx={{ minWidth: 180 }}>
               <InputLabel>Sắp xếp theo</InputLabel>
-              <Select
-                value={transportSortBy}
-                label="Sắp xếp theo"
-                onChange={(event) => setTransportSortBy(event.target.value)}
-              >
+              <Select value={transportSortBy} label="Sắp xếp theo" onChange={(event) => setTransportSortBy(event.target.value)}>
                 <MenuItem value="dispatchTime">Thời gian dispatch</MenuItem>
                 <MenuItem value="arrivalTime">Thời gian arrival</MenuItem>
                 <MenuItem value="fromStationName">Trạm đi</MenuItem>
@@ -679,11 +471,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Thứ tự</InputLabel>
-              <Select
-                value={transportSortOrder}
-                label="Thứ tự"
-                onChange={(event) => setTransportSortOrder(event.target.value)}
-              >
+              <Select value={transportSortOrder} label="Thứ tự" onChange={(event) => setTransportSortOrder(event.target.value)}>
                 <MenuItem value="asc">Tăng dần</MenuItem>
                 <MenuItem value="desc">Giảm dần</MenuItem>
               </Select>
@@ -703,10 +491,7 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
               </TableHead>
               <TableBody>
                 {sortedTransported.map((item) => (
-                  <TableRow
-                    key={`${item.transportId || item.specimenId}-${item.dispatchTime || item.arrivalTime || 'na'}`}
-                    hover
-                  >
+                  <TableRow key={`${item.transportId || item.specimenId}-${item.dispatchTime || item.arrivalTime || 'na'}`} hover>
                     <TableCell>{item.barcode}</TableCell>
                     <TableCell>{item.fromStationName}</TableCell>
                     <TableCell>{item.toStationName}</TableCell>
@@ -719,54 +504,38 @@ const PersistedDataPanel = memo(function PersistedDataPanel({ scada }) {
             </Table>
           </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={closeTransportedDialog}>Đóng</Button>
-        </DialogActions>
+        <DialogActions><Button onClick={closeTransportedDialog}>Đóng</Button></DialogActions>
       </Dialog>
     </Paper>
   );
 });
 
 // === Main AdminPage ===
-
 const AdminPage = memo(function AdminPage({ scada }) {
-  const [tabIndex, setTabIndex] = useState(0); // Mặc định mở tab Lịch Sử Hệ Thống
+  const [tabIndex, setTabIndex] = useState(0);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [maintenanceReason, setMaintenanceReason] = useState(scada.maintenanceMode?.reason || '');
-
-  // Fingerprint Enrollment State
   const [enrollUser, setEnrollUser] = useState(null);
 
-  const handleEnrollFingerprint = useCallback((user) => {
-    setEnrollUser(user);
-  }, []);
+  const handleEnrollFingerprint = useCallback((user) => setEnrollUser(user), []);
+  const handleCloseEnroll = useCallback(() => setEnrollUser(null), []);
 
-  const handleCloseEnroll = useCallback(() => {
-    setEnrollUser(null);
-  }, []);
-
-  // Called by modal when enrollment succeeds — updates fingerprintId in the user list immediately
   const handleEnrollSuccess = useCallback(({ userId, fingerprintId }) => {
     if (scada && typeof scada.updateUserFingerprintId === 'function') {
       scada.updateUserFingerprintId(userId, fingerprintId);
     }
   }, [scada]);
 
-  const handleTabChange = useCallback((_, newValue) => {
-    setTabIndex(newValue);
-  }, []);
+  const handleTabChange = useCallback((_, newValue) => setTabIndex(newValue), []);
 
   const handleToggleMaintenance = useCallback((_, checked) => {
     scada.setMaintenanceState(checked, maintenanceReason);
-    if (!checked) {
-      setMaintenanceReason('');
-    }
+    if (!checked) setMaintenanceReason('');
   }, [maintenanceReason, scada]);
 
   const handleOpenHistory = useCallback(() => setIsHistoryOpen(true), []);
   const handleCloseHistory = useCallback(() => setIsHistoryOpen(false), []);
 
-  // Confirm delete user dialog
   const [deleteConfirmUser, setDeleteConfirmUser] = useState(null);
 
   const handleRemoveRequest = useCallback((username) => {
@@ -780,196 +549,64 @@ const AdminPage = memo(function AdminPage({ scada }) {
     setDeleteConfirmUser(null);
   }, [deleteConfirmUser, scada]);
 
-  const handleCancelDelete = useCallback(() => {
-    setDeleteConfirmUser(null);
-  }, []);
+  const handleCancelDelete = useCallback(() => setDeleteConfirmUser(null), []);
 
   return (
-    <Box
-      sx={{
-        width: '100%',
-        minHeight: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      {/* Tab bar */}
-      <Paper
-        sx={{
-          position: 'sticky',
-          top: 0,
-          zIndex: 20,
-          backdropFilter: 'blur(16px)',
-          border: `1px solid ${alpha('#1976D2', 0.15)}`,
-          background: `linear-gradient(135deg, ${alpha('#1976D2', 0.08)} 0%, ${alpha('#64B5F6', 0.05)} 100%)`,
-          borderRadius: 3,
-          mb: 1,
-          boxShadow: `0 8px 32px ${alpha('#000', 0.15)}`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          pr: 2,
-          flexWrap: 'wrap',
-          gap: 1,
-        }}
-      >
-        <Tabs
-          value={tabIndex}
-          onChange={handleTabChange}
-          variant="scrollable"
-          scrollButtons="auto"
-          sx={{
-            '& .MuiTab-root': {
-              color: 'text.secondary',
-              '&.Mui-selected': { color: 'primary.main' },
-            },
-            '& .MuiTabs-indicator': {
-              bgcolor: 'primary.main',
-              boxShadow: `0 0 12px ${alpha('#1976D2', 0.5)}`,
-            },
-          }}
-        >
+    <Box sx={{ width: '100%', minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
+      <Paper sx={{
+        position: 'sticky', top: 0, zIndex: 20, backdropFilter: 'blur(16px)',
+        border: `1px solid ${alpha('#1976D2', 0.15)}`,
+        background: `linear-gradient(135deg, ${alpha('#1976D2', 0.08)} 0%, ${alpha('#64B5F6', 0.05)} 100%)`,
+        borderRadius: 3, mb: 1, boxShadow: `0 8px 32px ${alpha('#000', 0.15)}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', pr: 2, flexWrap: 'wrap', gap: 1
+      }}>
+        <Tabs value={tabIndex} onChange={handleTabChange} variant="scrollable" scrollButtons="auto" sx={{
+          '& .MuiTab-root': { color: 'text.secondary', '&.Mui-selected': { color: 'primary.main' } },
+          '& .MuiTabs-indicator': { bgcolor: 'primary.main', boxShadow: `0 0 12px ${alpha('#1976D2', 0.5)}` }
+        }}>
           <Tab label="1. Lịch Sử Hệ Thống" />
           <Tab label="2. Quản Lý Tài Khoản" />
           <Tab label="3. Cấp Tài Khoản" />
           <Tab label="4. Dữ Liệu Đã Lưu" />
-          <Tab label="5. Import Excel" />
         </Tabs>
 
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: { xs: 1, sm: 0 }, pl: { xs: 2, sm: 0 } }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <TextField
-              size="small"
-              placeholder="Lý do bảo trì..."
-              value={maintenanceReason}
-              onChange={(e) => setMaintenanceReason(e.target.value)}
-              disabled={scada.maintenanceMode?.enabled}
-              sx={{
-                width: 140,
-                '& .MuiInputBase-root': { fontSize: '0.75rem', height: 32 },
-              }}
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={scada.maintenanceMode?.enabled || false}
-                  onChange={handleToggleMaintenance}
-                  color="warning"
-                  sx={maintenanceSwitchSx}
-                />
-              }
-              label={scada.maintenanceMode?.enabled ? 'CHẾ ĐỘ BẢO TRÌ' : 'CHẾ ĐỘ BẢO TRÌ'}
-              sx={{
-                mr: 0,
-                '& .MuiFormControlLabel-label': {
-                  fontSize: '0.74rem',
-                  fontWeight: 800,
-                  letterSpacing: '0.04em',
-                  color: scada.maintenanceMode?.enabled ? '#FF9800' : 'text.secondary',
-                },
-              }}
-            />
-            {scada.maintenanceMode?.enabled && (
-              <BuildCircle sx={{ fontSize: 18, color: '#FF9800', opacity: 0.9 }} />
-            )}
+            <TextField size="small" placeholder="Lý do bảo trì..." value={maintenanceReason} onChange={(e) => setMaintenanceReason(e.target.value)} disabled={scada.maintenanceMode?.enabled} sx={{ '& .MuiInputBase-root': { fontSize: '0.75rem', height: 32 }, width: 140 }} />
+            <FormControlLabel control={<Switch checked={scada.maintenanceMode?.enabled || false} onChange={handleToggleMaintenance} color="warning" sx={maintenanceSwitchSx} />} label={scada.maintenanceMode?.enabled ? 'CHẾ ĐỘ BẢO TRÌ' : 'CHẾ ĐỘ BẢO TRÌ'} sx={{ mr: 0, '& .MuiFormControlLabel-label': { fontSize: '0.74rem', fontWeight: 800, letterSpacing: '0.04em', color: scada.maintenanceMode?.enabled ? '#FF9800' : 'text.secondary' } }} />
+            {scada.maintenanceMode?.enabled && <BuildCircle sx={{ fontSize: 18, color: '#FF9800', opacity: 0.9 }} />}
           </Box>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<History />}
-            onClick={handleOpenHistory}
-            sx={{
-              bgcolor: alpha('#1976D2', 0.1),
-              color: '#1976D2',
-              fontWeight: 700,
-              border: `1px solid ${alpha('#1976D2', 0.15)}`,
-              '&:hover': {
-                bgcolor: alpha('#1976D2', 0.2),
-              },
-            }}
-          >
+          <Button variant="contained" size="small" startIcon={<History />} onClick={handleOpenHistory} sx={{ bgcolor: alpha('#1976D2', 0.1), color: '#1976D2', fontWeight: 700, border: `1px solid ${alpha('#1976D2', 0.15)}`, '&:hover': { bgcolor: alpha('#1976D2', 0.2) } }}>
             Lịch sử vận chuyển
           </Button>
         </Box>
       </Paper>
 
-      {/* Tab content */}
       <Box sx={{ flexGrow: 1 }}>
-        <TabPanel value={tabIndex} index={0}>
-          <SystemLogsTable logs={scada.systemLogs} />
-        </TabPanel>
-
+        <TabPanel value={tabIndex} index={0}><SystemLogsTable logs={scada.systemLogs} /></TabPanel>
         <TabPanel value={tabIndex} index={1}>
-          <UserManagementTable
-            users={scada.users}
-            onToggleActive={scada.toggleUserActive}
-            onUpdateRole={scada.updateUserRole}
-            onUpdateStation={scada.updateUserStation}
-            onRemove={handleRemoveRequest}
-            onEnrollFingerprint={handleEnrollFingerprint}
-          />
+          <UserManagementTable users={scada.users} onToggleActive={scada.toggleUserActive} onUpdateRole={scada.updateUserRole} onUpdateStation={scada.updateUserStation} onRemove={handleRemoveRequest} onEnrollFingerprint={handleEnrollFingerprint} />
         </TabPanel>
-
-        <TabPanel value={tabIndex} index={2}>
-          <CreateUserForm onCreateUser={scada.addUser} />
-        </TabPanel>
-
-        <TabPanel value={tabIndex} index={3}>
-          <PersistedDataPanel scada={scada} />
-        </TabPanel>
-
-        <TabPanel value={tabIndex} index={4}>
-          <ExcelImportPanel />
-        </TabPanel>
+        <TabPanel value={tabIndex} index={2}><CreateUserForm onCreateUser={scada.addUser} /></TabPanel>
+        <TabPanel value={tabIndex} index={3}><PersistedDataPanel scada={scada} /></TabPanel>
       </Box>
 
-      {/* Confirm delete user dialog */}
       <Dialog open={Boolean(deleteConfirmUser)} onClose={handleCancelDelete} maxWidth="xs" fullWidth>
         <DialogTitle sx={{ fontWeight: 800, color: '#C41C1C' }}>Xác nhận xóa tài khoản</DialogTitle>
         <DialogContent dividers>
-          <Typography sx={{ mb: 1 }}>
-            Bạn có chắc chắn muốn <strong>xóa vĩnh viễn</strong> tài khoản này không?
-          </Typography>
-          <Typography variant="body2" sx={{ fontWeight: 700 }}>
-            Username: <span style={{ fontFamily: '"IBM Plex Mono", monospace' }}>{deleteConfirmUser?.username}</span>
-          </Typography>
-          {deleteConfirmUser?.fullname && (
-            <Typography variant="body2" sx={{ fontWeight: 700 }}>
-              Họ tên: {deleteConfirmUser.fullname}
-            </Typography>
-          )}
-          <Alert severity="error" sx={{ mt: 2 }}>
-            Hành động này không thể hoàn tác. Tất cả logs liên quan sẽ được giữ lại nhưng tài khoản sẽ bị xóa khỏi hệ thống.
-          </Alert>
+          <Typography sx={{ mb: 1 }}>Bạn có chắc chắn muốn <strong>xóa vĩnh viễn</strong> tài khoản này không?</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 700 }}>Username: <span style={{ fontFamily: '"IBM Plex Mono", monospace' }}>{deleteConfirmUser?.username}</span></Typography>
+          {deleteConfirmUser?.fullname && <Typography variant="body2" sx={{ fontWeight: 700 }}>Họ tên: {deleteConfirmUser.fullname}</Typography>}
+          <Alert severity="error" sx={{ mt: 2 }}>Hành động này không thể hoàn tác. Tất cả logs liên quan sẽ được giữ lại nhưng tài khoản sẽ bị xóa khỏi hệ thống.</Alert>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={handleCancelDelete} sx={{ fontWeight: 700 }}>Hủy</Button>
-          <Button
-            variant="contained"
-            color="error"
-            onClick={handleConfirmDelete}
-            sx={{ fontWeight: 800 }}
-          >
-            Xóa tài khoản
-          </Button>
+          <Button variant="contained" color="error" onClick={handleConfirmDelete} sx={{ fontWeight: 800 }}>Xóa tài khoản</Button>
         </DialogActions>
       </Dialog>
 
-      {/* Transport history dialog */}
-      <TransportHistoryDialog
-        open={isHistoryOpen}
-        onClose={handleCloseHistory}
-        records={scada.transportedSpecimens}
-        title="Lịch Sử Vận Chuyển — Admin"
-      />
-
-      {/* Fingerprint Enrollment Modal */}
-      <FingerprintEnrollModal
-        user={enrollUser}
-        onClose={handleCloseEnroll}
-        onSuccess={handleEnrollSuccess}
-        scada={scada}
-      />
+      <TransportHistoryDialog open={isHistoryOpen} onClose={handleCloseHistory} records={scada.transportedSpecimens} title="Lịch Sử Vận Chuyển — Admin" />
+      <FingerprintEnrollModal user={enrollUser} onClose={handleCloseEnroll} onSuccess={handleEnrollSuccess} scada={scada} />
     </Box>
   );
 });
@@ -1003,7 +640,6 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
     setProgress(100);
     setErrorMsg('');
 
-    // Use the MAIN app socket (already authenticated and connected)
     const socket = scada.getSocket?.();
     if (!socket?.connected) {
       setErrorMsg('Socket chưa kết nối. Vui lòng thử lại.');
@@ -1011,11 +647,9 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
       return;
     }
 
-    // Tell server to enter enrollment mode for this user
     socket.emit('FINGERPRINT_ENROLL_START', { userId: user.id, username: user.username });
     console.log('[FP Modal] FINGERPRINT_ENROLL_START via main socket, userId=', user.id);
 
-    // Listen for enrollment result on the MAIN socket
     const handleSuccess = (data) => {
       if (String(data.userId) !== String(user.id)) return;
       if (doneRef.current) return;
@@ -1054,7 +688,6 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
     socket.on('ENROLL_ERROR', handleError);
     socket.on('ENROLL_STEP_DONE', handleStepDone);
 
-    // Progress bar
     startTimeRef.current = Date.now();
     const updateProgress = () => {
       if (doneRef.current) return;
@@ -1065,7 +698,6 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
     };
     progressRef.current = requestAnimationFrame(updateProgress);
 
-    // Timeout
     timerRef.current = setTimeout(() => {
       if (doneRef.current) return;
       setStatus(FP_STATUS.TIMEOUT);
@@ -1081,7 +713,6 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
       if (progressRef.current) { cancelAnimationFrame(progressRef.current); progressRef.current = null; }
       if (!doneRef.current) socket.emit('FINGERPRINT_ENROLL_CANCEL');
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   const handleClose = useCallback(() => {
@@ -1115,15 +746,9 @@ const FingerprintEnrollModal = memo(function FingerprintEnrollModal({ user, onCl
             </Typography>
             <Typography variant="body2" sx={{ color: alpha('#B3D9FF', 0.7), textAlign: 'center', mb: 3, height: 40 }}>
               {enrollStep === 1 ? (
-                <>
-                  Nhân viên <b>{user?.fullname}</b> vui lòng đặt ngón tay lên cảm biến.<br />
-                  <i>Đang chờ lần quét đầu tiên...</i>
-                </>
+                <>Nhân viên <b>{user?.fullname}</b> vui lòng đặt ngón tay lên cảm biến.<br /><i>Đang chờ lần quét đầu tiên...</i></>
               ) : (
-                <>
-                  <b style={{ color: '#66BB6A' }}>Lần 1 thành công!</b><br />
-                  Hãy nhấc tay ra và <b>đặt lại lần 2</b> để xác nhận.
-                </>
+                <><b style={{ color: '#66BB6A' }}>Lần 1 thành công!</b><br />Hãy nhấc tay ra và <b>đặt lại lần 2</b> để xác nhận.</>
               )}
             </Typography>
             <Box sx={{ width: '100%', px: 2 }}>

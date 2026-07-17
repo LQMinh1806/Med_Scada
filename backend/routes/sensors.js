@@ -66,7 +66,7 @@ export default function createSensorRoutes(io) {
       // ── Vị trí cabin trên đường ray (Encoder) ────────────────────────────
       positionCm:     Number(body.positionCm    ?? 0),    // Vị trí (cm từ ST-01)
       positionPct:    Number(body.positionPct   ?? 0),    // % trên ray (0=ST-01, 100=ST-04)
-      railLengthCm:   Number(body.railLengthCm  ?? 412.3),// Tổng chiều dài ray (cm)
+      railLengthCm:   Number(body.railLengthCm  ?? 369.0),// Tổng chiều dài ray (cm)
       speedCmPerSec:  Number(body.speedCmPerSec ?? 0),    // Tốc độ có dấu (cm/s)
       encoderPulses:  Number(body.encoderPulses ?? 0),    // Tổng xung thô (có dấu)
       direction:      String(body.direction     ?? 'DUNG'), // TIEN | LUI | DUNG | LOI

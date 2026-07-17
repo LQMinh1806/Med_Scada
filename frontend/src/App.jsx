@@ -32,7 +32,6 @@ import LoginPage from './components/LoginPage';
 import MonitoringDisplay from './components/MonitoringDisplay';
 import ControlPage from './components/ControlPage';
 import AdminPage from './components/AdminPage';
-import AudioAlertControls from './components/AudioAlertControls';
 import ControlAuthDialog from './components/ControlAuthDialog';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
@@ -411,7 +410,6 @@ export default function App() {
             />
           )}
 
-          <AudioAlertControls audioAlerts={audioAlerts} />
 
           <Button
             color="inherit"

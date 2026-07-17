@@ -172,6 +172,7 @@ export default function useScada() {
     clearQueue,
     replaceQueue,
     dequeueNextTask,
+    peekNextTask,
     syncDirectionRef,
   } = scheduler;
 
@@ -1706,13 +1707,23 @@ export default function useScada() {
   // === Queue processor: dequeue and execute next task ===
   const processNextQueueTask = useCallback((currentStationIndex) => {
     if (maintenanceRef.current.enabled) return;
-    // OPC UA spec: only pop queue when Cabin_Ready = TRUE (PLC not busy lifting)
-    if (!opc.plcState.cabinReady) {
-      addLog('[QUEUE] Cabin đang bận (nâng/hạ), chờ Cabin_Ready...', 'info');
-      return;
-    }
     if (queueRef.current.length === 0) {
       syncDirectionRef(DIRECTION.IDLE);
+      return;
+    }
+
+    // Peek at the next task BEFORE checking cabinReady so we can decide
+    // whether the check even applies.
+    const { task: peekedTask } = peekNextTask(currentStationIndex);
+
+    // Pure CALL (không có hàng): cabin chỉ di chuyển, PLC không cần nâng/hạ khay
+    // → không cần chờ Cabin_Ready, gửi Target_Station ngay lập tức.
+    const isPureCall = peekedTask?.type === 'CALL' && !peekedTask?.metadata?.specimenRecord
+      && !peekedTask?.metadata?.routeDelivery && !peekedTask?.metadata?.isBatch;
+
+    // DISPATCH hoặc route delivery: PLC cần nâng/hạ khay → phải chờ Cabin_Ready = TRUE
+    if (!isPureCall && !opc.plcState.cabinReady) {
+      addLog('[QUEUE] Cabin đang bận (nâng/hạ), chờ Cabin_Ready...', 'info');
       return;
     }
 
@@ -1729,18 +1740,47 @@ export default function useScada() {
       : nextTask.priority === QUEUE_PRIORITY.SPECIMEN
         ? '[ƯU TIÊN] '
         : '';
-    addLog(
-      `[QUEUE] ${priorityTag}Đang xử lý task: [${nextTask.type}] -> ${stationName} (còn ${queueRef.current.length} task trong hàng chờ)`,
-      'info'
-    );
+
+    if (isPureCall) {
+      addLog(
+        `[QUEUE] ${priorityTag}[GỌI CABIN] -> ${stationName} (không cần Cabin_Ready — không có hàng)`,
+        'info'
+      );
+    } else {
+      addLog(
+        `[QUEUE] ${priorityTag}Đang xử lý task: [${nextTask.type}] -> ${stationName} (còn ${queueRef.current.length} task trong hàng chờ)`,
+        'info'
+      );
+    }
 
     executeRobotMove(nextTask.type, nextTask.stationId, nextTask.metadata);
-  }, [addLog, dequeueNextTask, executeRobotMove, syncDirectionRef, queueRef, opc.plcState.cabinReady]);
+  }, [addLog, dequeueNextTask, peekNextTask, executeRobotMove, syncDirectionRef, queueRef, opc.plcState.cabinReady]);
 
   // Keep ref in sync so executeRobotMove always calls the latest processNextQueueTask
   useEffect(() => {
     processQueueRef.current = processNextQueueTask;
   }, [processNextQueueTask]);
+
+  // === FIX: Trigger queue khi Cabin_Ready đổi sang TRUE ===
+  // Vấn đề: khi gọi cabin không có hàng (thuần túy), PLC set Cabin_Ready=FALSE khi
+  // cabin đến trạm và chờ confirm. Nếu không có hàng → không bấm confirm → Cabin_Ready
+  // không bao giờ về TRUE → lệnh trong queue bị giữ mãi vì processNextQueueTask()
+  // return sớm khi check !cabinReady. useEffect này phá vỡ deadlock đó:
+  // khi Cabin_Ready vừa đổi → TRUE, tự động trigger lại queue processor.
+  useEffect(() => {
+    if (!opc.plcState.cabinReady) return;          // Chỉ trigger khi vừa trở thành TRUE
+    if (queueRef.current.length === 0) return;     // Không có gì trong queue → bỏ qua
+    if (maintenanceRef.current?.enabled) return;   // Đang bảo trì → không xử lý
+
+    // Delay nhỏ để đảm bảo processQueueRef.current đã cập nhật phiên bản mới nhất
+    const timerId = setTimeout(() => {
+      if (processQueueRef.current) {
+        processQueueRef.current(robotStateRef.current.index);
+      }
+    }, 100);
+
+    return () => clearTimeout(timerId);
+  }, [opc.plcState.cabinReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // === Trigger queue processing when a new task is enqueued while IDLE ===
   const triggerQueueIfIdle = useCallback(() => {
