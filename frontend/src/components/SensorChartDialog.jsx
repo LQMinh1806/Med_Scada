@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useRef, useLayoutEffect, useState } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -20,8 +20,40 @@ import {
   Remove,
 } from '@mui/icons-material';
 
+// ── Moving average utility ────────────────────────────────────────────────────
+function movingAvg(arr, w = 5) {
+  return arr.map((_, i) => {
+    const slice = arr.slice(Math.max(0, i - w + 1), i + 1).filter((v) => v != null);
+    if (slice.length === 0) return null;
+    return slice.reduce((a, b) => a + b, 0) / slice.length;
+  });
+}
+
 // ── SVG Line Chart component ─────────────────────────────────────────────────
+//
+// Dataset shape:
+//   { data, color, strokeWidth?, opacity?, showDots?, dotOpacity?, fillOpacity? }
+//
+// Recommended pairing (matches latency benchmark chart style):
+//   Raw line : strokeWidth=1.2, opacity=0.5, showDots=true,  fillOpacity=0.12
+//   MA line  : strokeWidth=2.8, opacity=1,   showDots=false, fillOpacity=0
+//
 const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = true }) {
+  // Track real container width so we can compensate for SVG viewBox distortion
+  // when rendering dot ellipses (a <circle> in preserveAspectRatio="none" SVG
+  // gets stretched; we use <ellipse> with corrected rx/ry instead).
+  const containerRef   = useRef(null);
+  const [containerWidth, setContainerWidth] = useState(400);
+
+  useLayoutEffect(() => {
+    if (!containerRef.current) return;
+    const obs = new ResizeObserver((entries) => {
+      setContainerWidth(entries[0].contentRect.width || 400);
+    });
+    obs.observe(containerRef.current);
+    return () => obs.disconnect();
+  }, []);
+
   const allValues = datasets.flatMap((ds) => ds.data.filter((v) => v != null));
   if (allValues.length === 0) {
     return (
@@ -33,15 +65,15 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
 
   const rawMin = Math.min(...allValues);
   const rawMax = Math.max(...allValues);
-  const range = Math.max(rawMax - rawMin, 0.1);
-  const padV  = range * 0.12;
-  const yMin  = rawMin - padV;
-  const yMax  = rawMax + padV;
+  const range  = Math.max(rawMax - rawMin, 0.1);
+  const padV   = range * 0.12;
+  const yMin   = rawMin - padV;
+  const yMax   = rawMax + padV;
   const yRange = yMax - yMin;
 
   const maxLen = Math.max(...datasets.map((ds) => ds.data.length), 1);
 
-  const toX = (i) => maxLen === 1 ? 50 : (i / (maxLen - 1)) * 100;
+  const toX = (i) => (maxLen === 1 ? 50 : (i / (maxLen - 1)) * 100);
   const toY = (v) => 100 - ((v - yMin) / yRange) * 100;
 
   const makePath = (data) => {
@@ -56,8 +88,13 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
     value: yMin + (yRange * pct) / 100,
   }));
 
+  // Target screen-space dot radius (px); compensate for viewBox stretch.
+  const SCREEN_DOT_R = 2.5;
+  const dotRx = (SCREEN_DOT_R * 100) / Math.max(containerWidth, 1);
+  const dotRy = (SCREEN_DOT_R * 100) / Math.max(height, 1);
+
   return (
-    <Box sx={{ position: 'relative', width: '100%', height }}>
+    <Box ref={containerRef} sx={{ position: 'relative', width: '100%', height }}>
       <svg
         width="100%"
         height={height}
@@ -75,8 +112,10 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
           />
         ))}
 
-        {/* Area fills */}
+        {/* Area fills — only rendered when fillOpacity > 0 */}
         {datasets.map((ds, di) => {
+          const fo = ds.fillOpacity ?? (di === 0 ? 0.08 : 0);
+          if (fo <= 0) return null;
           const pts = ds.data.map((v, i) => (v != null ? `${toX(i)},${toY(v)}` : null)).filter(Boolean);
           if (pts.length < 2) return null;
           const areaPath = `M ${pts[0]} L ${pts.join(' L ')} L ${toX(ds.data.length - 1)},100 L ${toX(0)},100 Z`;
@@ -85,7 +124,7 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
               key={`area-${di}`}
               d={areaPath}
               fill={ds.color}
-              fillOpacity={0.08}
+              fillOpacity={fo}
             />
           );
         })}
@@ -100,26 +139,52 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
               d={path}
               fill="none"
               stroke={ds.color}
-              strokeWidth={1.8}
+              strokeWidth={ds.strokeWidth ?? 1.8}
+              strokeOpacity={ds.opacity ?? 1}
               strokeLinejoin="round"
               strokeLinecap="round"
             />
           );
         })}
 
-        {/* Last point dot */}
+        {/* Per-point dots (ellipses compensate for viewBox aspect-ratio stretch) */}
+        {datasets.map((ds, di) =>
+          ds.showDots
+            ? ds.data.map((v, i) =>
+                v != null ? (
+                  <ellipse
+                    key={`dot-${di}-${i}`}
+                    cx={toX(i)}
+                    cy={toY(v)}
+                    rx={dotRx}
+                    ry={dotRy}
+                    fill={ds.color}
+                    fillOpacity={ds.dotOpacity ?? 0.65}
+                  />
+                ) : null
+              )
+            : null
+        )}
+
+        {/* Terminator dot on last point of non-showDots datasets (e.g. MA line) */}
         {datasets.map((ds, di) => {
+          if (ds.showDots) return null;
           const last = ds.data.findLastIndex((v) => v != null);
           if (last < 0) return null;
-          const x = toX(last);
-          const y = toY(ds.data[last]);
           return (
-            <circle key={`dot-${di}`} cx={x} cy={y} r={1.8} fill={ds.color} />
+            <ellipse
+              key={`last-${di}`}
+              cx={toX(last)}
+              cy={toY(ds.data[last])}
+              rx={dotRx}
+              ry={dotRy}
+              fill={ds.color}
+            />
           );
         })}
       </svg>
 
-      {/* Y-axis labels (absolute on right side) */}
+      {/* Y-axis labels */}
       {showGrid && (
         <Box sx={{ position: 'absolute', right: 0, top: 0, bottom: 0, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', pointerEvents: 'none' }}>
           {[yMax, (yMax + yMin) / 2, yMin].map((v, i) => (
@@ -168,17 +233,24 @@ const SensorChartDialog = memo(function SensorChartDialog({
     return sensorHistory;
   }, [sensorHistory]);
 
-  const envChartData = useMemo(() => ({
-    temp: history.map((d) => d.temperature),
-    hum:  history.map((d) => d.humidity),
-  }), [history]);
+  const envChartData = useMemo(() => {
+    const temp = history.map((d) => d.temperature);
+    const hum  = history.map((d) => d.humidity);
+    return { temp, hum, tempMA: movingAvg(temp, 5), humMA: movingAvg(hum, 5) };
+  }, [history]);
 
-  const stabilityChartData = useMemo(() => ({
-    score: history.map((d) => d.stabilityScore),
-    ax:    history.map((d) => d.accelX),
-    ay:    history.map((d) => d.accelY),
-    az:    history.map((d) => d.accelZ),
-  }), [history]);
+  const stabilityChartData = useMemo(() => {
+    const score = history.map((d) => d.stabilityScore);
+    const ax    = history.map((d) => d.accelX);
+    const ay    = history.map((d) => d.accelY);
+    const az    = history.map((d) => d.accelZ);
+    return {
+      score, scoreMA: movingAvg(score, 5),
+      ax,    axMA:    movingAvg(ax, 5),
+      ay,    ayMA:    movingAvg(ay, 5),
+      az,    azMA:    movingAvg(az, 5),
+    };
+  }, [history]);
 
   // Stats: min/max/avg
   const computeStats = (arr) => {
@@ -278,7 +350,10 @@ const SensorChartDialog = memo(function SensorChartDialog({
               </Box>
               <Box sx={{ bgcolor: alpha('#65B5FF', 0.05), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#65B5FF', 0.12)}` }}>
                 <LineChart
-                  datasets={[{ data: envChartData.temp, color: '#65B5FF' }]}
+                  datasets={[
+                    { data: envChartData.temp,   color: '#65B5FF', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.12 },
+                    { data: envChartData.tempMA, color: '#65B5FF', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                  ]}
                   height={140}
                 />
               </Box>
@@ -307,7 +382,10 @@ const SensorChartDialog = memo(function SensorChartDialog({
               </Box>
               <Box sx={{ bgcolor: alpha('#29B6F6', 0.05), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#29B6F6', 0.12)}` }}>
                 <LineChart
-                  datasets={[{ data: envChartData.hum, color: '#29B6F6' }]}
+                  datasets={[
+                    { data: envChartData.hum,   color: '#29B6F6', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.12 },
+                    { data: envChartData.humMA, color: '#29B6F6', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                  ]}
                   height={120}
                 />
               </Box>
@@ -349,7 +427,10 @@ const SensorChartDialog = memo(function SensorChartDialog({
               </Box>
               <Box sx={{ bgcolor: alpha('#0BDF50', 0.05), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#0BDF50', 0.12)}` }}>
                 <LineChart
-                  datasets={[{ data: stabilityChartData.score, color: '#0BDF50' }]}
+                  datasets={[
+                    { data: stabilityChartData.score,   color: '#0BDF50', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.12 },
+                    { data: stabilityChartData.scoreMA, color: '#0BDF50', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                  ]}
                   height={140}
                 />
               </Box>
@@ -375,9 +456,12 @@ const SensorChartDialog = memo(function SensorChartDialog({
               <Box sx={{ bgcolor: alpha('#FF5722', 0.04), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#FF5722', 0.1)}` }}>
                 <LineChart
                   datasets={[
-                    { data: stabilityChartData.ax, color: '#FF5722' },
-                    { data: stabilityChartData.ay, color: '#FFC107' },
-                    { data: stabilityChartData.az, color: '#29B6F6' },
+                    { data: stabilityChartData.ax,   color: '#FF5722', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.08 },
+                    { data: stabilityChartData.axMA, color: '#FF5722', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: stabilityChartData.ay,   color: '#FFC107', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0 },
+                    { data: stabilityChartData.ayMA, color: '#FFC107', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: stabilityChartData.az,   color: '#29B6F6', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0 },
+                    { data: stabilityChartData.azMA, color: '#29B6F6', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
                   ]}
                   height={130}
                 />
