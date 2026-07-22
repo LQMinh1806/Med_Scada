@@ -146,6 +146,7 @@ const PAGE_TITLES = {
 
 export default function App() {
   const scada = useScada();
+  const { setIsAuthenticated, setCurrentUser } = scada;
   const [currentPage, setCurrentPage] = useState(ROUTES.LOGIN);
   const [sessionResolved, setSessionResolved] = useState(false);
   const [controlAuthOpen, setControlAuthOpen] = useState(false);
@@ -174,17 +175,45 @@ export default function App() {
     playCabinArrived,
   ]);
 
+  const [masterUser, setMasterUser] = useState(null);
+
+  // === Master user session restoration ===
+  // Automatically restore primary logged-in account (e.g. admin) when exiting Control page
+  const restoreMasterUserSession = useCallback(() => {
+    if (masterUser && scada.currentUser?.id !== masterUser.id) {
+      setCurrentUser(masterUser);
+      fetch(`${API_BASE_URL}/auth/restore-master`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: attachCsrfHeader('POST', { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ targetUserId: masterUser.id }),
+      }).catch(() => null);
+    }
+  }, [masterUser, scada.currentUser?.id, setCurrentUser]);
+
   // === Navigation ===
-  const navigateTo = useCallback((page) => setCurrentPage(page), []);
+  const navigateTo = useCallback((page) => {
+    if (page === ROUTES.MONITORING || page === ROUTES.ADMIN) {
+      restoreMasterUserSession();
+    }
+    setCurrentPage(page);
+  }, [restoreMasterUserSession]);
 
   const handleLogin = useCallback(() => {
+    if (scada.currentUser) {
+      setMasterUser(scada.currentUser);
+    }
     setCurrentPage(ROUTES.MONITORING);
-  }, []);
+  }, [scada.currentUser]);
 
   // Control page access
   const handleControlAccess = useCallback(() => {
+    // Lock in current master user if not set yet
+    if (scada.currentUser && (!masterUser || masterUser.id === scada.currentUser.id)) {
+      setMasterUser(scada.currentUser);
+    }
     setControlAuthOpen(true);
-  }, []);
+  }, [scada.currentUser, masterUser]);
 
   const handleControlAuthSuccess = useCallback(() => {
     setControlAuthOpen(false);
@@ -197,11 +226,10 @@ export default function App() {
 
   // Auto-return to monitoring after transport completes
   const handleTransportComplete = useCallback(() => {
+    restoreMasterUserSession();
     setCurrentPage(ROUTES.MONITORING);
-  }, []);
+  }, [restoreMasterUserSession]);
 
-  // Fix: destructure stable references to avoid depending on entire scada object
-  const { setIsAuthenticated, setCurrentUser } = scada;
   const handleLogout = useCallback(async () => {
     try {
       await fetch(`${API_BASE_URL}/auth/logout`, {
@@ -213,6 +241,7 @@ export default function App() {
       // Keep local logout deterministic even when backend is temporarily unavailable.
     }
 
+    setMasterUser(null);
     setIsAuthenticated(false);
     setCurrentUser(null);
     setCurrentPage(ROUTES.LOGIN);
@@ -231,14 +260,16 @@ export default function App() {
         if (!active) return;
 
         if (response.ok && result?.user) {
-          setCurrentUser({
+          const userObj = {
             id: result.user.id,
             username: result.user.username,
             fullname: result.user.fullname,
             role: result.user.role,
             active: result.user.active,
             stationId: result.user.stationId ?? null,
-          });
+          };
+          setCurrentUser(userObj);
+          setMasterUser(userObj);
           setIsAuthenticated(true);
           setCurrentPage((prev) => (prev === ROUTES.LOGIN ? ROUTES.MONITORING : prev));
         }
@@ -256,16 +287,20 @@ export default function App() {
     };
   }, [setCurrentUser, setIsAuthenticated]);
 
-  const handleGoHome = useCallback(() => navigateTo(ROUTES.MONITORING), [navigateTo]);
+  const handleGoHome = useCallback(() => {
+    restoreMasterUserSession();
+    setCurrentPage(ROUTES.MONITORING);
+  }, [restoreMasterUserSession]);
 
-  // Memoize the system status indicator
+  // Online indicator: latch khi nhận được bất kỳ biến PLC nào (lastPlcDataTs > 0)
+  // Một khi đã ONLINE thì giữ nguyên — chỉ OFFLINE khi chưa nhận được gì
   const systemStatus = useMemo(() => {
-    const isOnline = scada.robotState.isOnline;
+    const online = scada.lastPlcDataTs > 0;
     return {
-      color: isOnline ? '#0BDF50' : '#C41C1C',
-      label: isOnline ? 'ONLINE' : 'OFFLINE',
+      color: online ? '#0BDF50' : '#C41C1C',
+      label: online ? 'ONLINE' : 'OFFLINE',
     };
-  }, [scada.robotState.isOnline]);
+  }, [scada.lastPlcDataTs]);
 
   const isMaintenance = scada.maintenanceMode?.enabled;
 

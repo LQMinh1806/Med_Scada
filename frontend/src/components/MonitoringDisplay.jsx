@@ -12,7 +12,6 @@ import {
   Map as MapIcon,
   History,
   TrendingUp,
-  Schedule,
   Speed,
   LocalShipping,
   PrecisionManufacturing,
@@ -189,20 +188,58 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada, navigateTo, c
     const total = records.length;
     const destinationCount = new Set(records.map((record) => record.toStationId).filter(Boolean)).size;
 
-    let avgDeliveryMin = 0;
+    // Helper tính thời gian di chuyển vật lý giữa 2 trạm (giây)
+    const getActualTravelSec = (fromId, toId) => {
+      const getSec = (num) => (num === 1 ? 0 : num === 2 ? 11 : num === 3 ? 19 : 30);
+      const fNum = parseInt(String(fromId || '').replace(/\D/g, ''), 10);
+      const tNum = parseInt(String(toId || '').replace(/\D/g, ''), 10);
+      if (fNum && tNum && fNum !== tNum) {
+        return Math.abs(getSec(tNum) - getSec(fNum));
+      }
+      return 15;
+    };
+
+    // Tính thời gian di chuyển thực tế của cabin giữa các trạm (bỏ qua thời gian chờ người bấm xác nhận)
+    let totalTravelMs = 0;
     let validTimings = 0;
     for (const record of records) {
-      if (!record.dispatchTime || !record.arrivalTime) continue;
-      const dispatch = new Date(record.dispatchTime).getTime();
-      const arrival = new Date(record.arrivalTime).getTime();
-      if (!Number.isNaN(dispatch) && !Number.isNaN(arrival) && arrival > dispatch) {
-        avgDeliveryMin += (arrival - dispatch) / 60000;
-        validTimings += 1;
+      if (!record.fromStationId || !record.toStationId) continue;
+
+      let travelMs = 0;
+      if (record.dispatchTime && record.arrivalTime) {
+        const dispatch = new Date(record.dispatchTime).getTime();
+        const arrival = new Date(record.arrivalTime).getTime();
+        const diffMs = arrival - dispatch;
+        // Nếu thời gian chênh lệch nằm trong khoảng thực tế di chuyển (0 < t <= 90s)
+        if (!Number.isNaN(dispatch) && !Number.isNaN(arrival) && diffMs > 0 && diffMs <= 90000) {
+          travelMs = diffMs;
+        } else {
+          // Nếu bị trễ do người vận hành chậm bấm xác nhận, lấy chuẩn hành trình thực tế giữa 2 trạm
+          travelMs = getActualTravelSec(record.fromStationId, record.toStationId) * 1000;
+        }
+      } else {
+        travelMs = getActualTravelSec(record.fromStationId, record.toStationId) * 1000;
+      }
+
+      totalTravelMs += travelMs;
+      validTimings += 1;
+    }
+
+    let avgTravelDisplay = '—';
+    let avgTravelUnit = 'phút';
+    if (validTimings > 0) {
+      const avgMs = totalTravelMs / validTimings;
+      const avgSec = avgMs / 1000;
+      if (avgSec < 60) {
+        avgTravelDisplay = avgSec.toFixed(0);
+        avgTravelUnit = 'giây';
+      } else {
+        avgTravelDisplay = (avgSec / 60).toFixed(1);
+        avgTravelUnit = 'phút';
       }
     }
-    avgDeliveryMin = validTimings > 0 ? (avgDeliveryMin / validTimings).toFixed(1) : '—';
 
-    return { total, destinationCount, avgDeliveryMin };
+    return { total, destinationCount, avgTravelDisplay, avgTravelUnit };
   }, [transportedSpecimens]);
 
   const queueByStationId = useMemo(() => {
@@ -225,17 +262,16 @@ const MonitoringDisplay = memo(function MonitoringDisplay({ scada, navigateTo, c
         {/* ── KPI row + action buttons ────────────────────────────── */}
         <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'stretch' }}>
 
-          {/* 4 KPI cards — nhỏ hơn */}
+          {/* 3 KPI cards */}
           <Box sx={{
             flex: 3,
             display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
+            gridTemplateColumns: 'repeat(3, 1fr)',
             gap: 0.75,
           }}>
             <KpiCard icon={<LocalShipping />} label="Tổng vận chuyển" value={kpis.total} unit="lượt" color="#65B5FF" />
-            <KpiCard icon={<Speed />} label="Thời gian TB" value={kpis.avgDeliveryMin} unit="phút" color="#1976D2" />
+            <KpiCard icon={<Speed />} label="TG di chuyển TB" value={kpis.avgTravelDisplay} unit={kpis.avgTravelUnit} color="#1976D2" />
             <KpiCard icon={<TrendingUp />} label="Trạm nhận" value={kpis.destinationCount} unit="trạm" color="#FF9800" />
-            <KpiCard icon={<Schedule />} label="Uptime" value={robotState.isOnline ? '100' : '0'} unit="%" color="#0BDF50" />
           </Box>
 
           {/* Nút Điều khiển — luôn hiện, style như hình 2 */}

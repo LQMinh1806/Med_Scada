@@ -40,9 +40,16 @@ function getPositionOnRail(railPoints, pct) {
 }
 
 function getTrackAngle(railPoints, index) {
+  if (!railPoints || railPoints.length < 2) return 0;
   const point = railPoints[index];
-  const nextPoint = railPoints[index + 1] || railPoints[index - 1] || point;
-  return (Math.atan2(nextPoint.y - point.y, nextPoint.x - point.x) * 180) / Math.PI;
+  if (!point) return 0;
+  if (index < railPoints.length - 1) {
+    const nextPoint = railPoints[index + 1] || point;
+    return (Math.atan2(nextPoint.y - point.y, nextPoint.x - point.x) * 180) / Math.PI;
+  } else {
+    const prevPoint = railPoints[index - 1] || point;
+    return (Math.atan2(point.y - prevPoint.y, point.x - prevPoint.x) * 180) / Math.PI;
+  }
 }
 
 function normalize(x, y) {
@@ -67,6 +74,33 @@ function pointsToPolyline(points) {
   return points.map((p) => `${p.x},${p.y}`).join(' ');
 }
 
+// Builds an SVG path string with smooth quadratic-bezier corners.
+function buildRoundedPath(points, radius = 55) {
+  if (!points || points.length < 2) return '';
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+    const dx1 = curr.x - prev.x;
+    const dy1 = curr.y - prev.y;
+    const len1 = Math.hypot(dx1, dy1);
+    const dx2 = next.x - curr.x;
+    const dy2 = next.y - curr.y;
+    const len2 = Math.hypot(dx2, dy2);
+    if (len1 === 0 || len2 === 0) { d += ` L ${curr.x} ${curr.y}`; continue; }
+    const r = Math.min(radius, len1 * 0.45, len2 * 0.45);
+    const bx = curr.x - (dx1 / len1) * r;
+    const by = curr.y - (dy1 / len1) * r;
+    const ax = curr.x + (dx2 / len2) * r;
+    const ay = curr.y + (dy2 / len2) * r;
+    d += ` L ${bx.toFixed(1)} ${by.toFixed(1)} Q ${curr.x} ${curr.y} ${ax.toFixed(1)} ${ay.toFixed(1)}`;
+  }
+  const last = points[points.length - 1];
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
+
 function getStatusLedColor(status) {
   if (status === ROBOT_STATUS.MOVING) return '#1976D2';
   if (status === ROBOT_STATUS.ESTOP) return '#ff5252';
@@ -82,9 +116,10 @@ const RailDefs = memo(function RailDefs({ ids }) {
         <path d="M 60 0 L 0 0 0 60" fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
       </pattern>
 
-      <linearGradient id={ids.bedGradient} x1="0%" y1="0%" x2="0%" y2="100%">
-        <stop offset="0%" stopColor="#455a64" />
-        <stop offset="100%" stopColor="#263238" />
+      <linearGradient id={ids.bedGradient} x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stopColor="#3d5260" />
+        <stop offset="50%" stopColor="#37474f" />
+        <stop offset="100%" stopColor="#3d5260" />
       </linearGradient>
 
       <linearGradient id={ids.steelGradient} x1="0%" y1="0%" x2="0%" y2="100%">
@@ -152,8 +187,8 @@ const RailTrack = memo(function RailTrack({ railGeometry, ids }) {
       <rect width="100%" height="100%" fill={`url(#${ids.grid})`} opacity="0.36" />
 
       {/* Shadow */}
-      <polyline
-        points={railGeometry.centerline}
+      <path
+        d={railGeometry.centerline}
         transform="translate(14,12)"
         stroke="rgba(0,0,0,0.38)"
         strokeWidth="38"
@@ -163,8 +198,8 @@ const RailTrack = memo(function RailTrack({ railGeometry, ids }) {
       />
 
       {/* Bed */}
-      <polyline
-        points={railGeometry.centerline}
+      <path
+        d={railGeometry.centerline}
         stroke={`url(#${ids.bedGradient})`}
         strokeWidth="34"
         strokeLinecap="round"
@@ -173,8 +208,8 @@ const RailTrack = memo(function RailTrack({ railGeometry, ids }) {
       />
 
       {/* Service tube */}
-      <polyline
-        points={railGeometry.serviceTube}
+      <path
+        d={railGeometry.serviceTube}
         stroke={`url(#${ids.tubeGradient})`}
         strokeWidth="10"
         strokeLinecap="round"
@@ -184,16 +219,16 @@ const RailTrack = memo(function RailTrack({ railGeometry, ids }) {
       />
 
       {/* Rails */}
-      <polyline points={railGeometry.leftRail} stroke={`url(#${ids.steelGradient})`} strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-      <polyline points={railGeometry.rightRail} stroke={`url(#${ids.steelGradient})`} strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d={railGeometry.leftRail}  stroke={`url(#${ids.steelGradient})`} strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d={railGeometry.rightRail} stroke={`url(#${ids.steelGradient})`} strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" fill="none" />
 
       {/* Grooves */}
-      <polyline points={railGeometry.leftRail} stroke={`url(#${ids.grooveGradient})`} strokeWidth="2.8" strokeLinecap="round" fill="none" />
-      <polyline points={railGeometry.rightRail} stroke={`url(#${ids.grooveGradient})`} strokeWidth="2.8" strokeLinecap="round" fill="none" />
+      <path d={railGeometry.leftRail}  stroke={`url(#${ids.grooveGradient})`} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path d={railGeometry.rightRail} stroke={`url(#${ids.grooveGradient})`} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
 
       {/* Magnetic guide */}
-      <polyline
-        points={railGeometry.centerGroove}
+      <path
+        d={railGeometry.centerGroove}
         stroke={`url(#${ids.magneticGradient})`}
         strokeWidth="3.5"
         strokeDasharray="8 18"
@@ -202,11 +237,11 @@ const RailTrack = memo(function RailTrack({ railGeometry, ids }) {
         filter={`url(#${ids.glow})`}
       >
         <animate attributeName="stroke-dashoffset" from="0" to="-220" dur="3.8s" repeatCount="indefinite" />
-      </polyline>
+      </path>
 
       {/* Center highlight */}
-      <polyline
-        points={railGeometry.centerGroove}
+      <path
+        d={railGeometry.centerGroove}
         stroke="rgba(255,255,255,0.35)"
         strokeWidth="1"
         strokeLinecap="round"
@@ -256,19 +291,7 @@ const CabinSprite = memo(function CabinSprite({ pose, ledColor, status, moveId, 
 
   return (
     <>
-      {/* Motion trail */}
-      {animating && (
-        <g
-          style={{
-            transform: `translate(${pose.x}px, ${pose.y}px) rotate(${pose.angle}deg)`,
-            ...(useTransition ? { transition: SMOOTH_TRANSITION } : {}),
-          }}
-          opacity="0.45"
-        >
-          <path d="M -86 0 L -42 -8 L -42 8 Z" fill="#80deea" filter={`url(#${ids.softBlur})`} />
-          <path d="M -106 0 L -58 -11 L -58 11 Z" fill="#26c6da" filter={`url(#${ids.softBlur})`} />
-        </g>
-      )}
+      {/* Motion trail removed */}
 
       {/* Cabin body — smooth glide via CSS transition */}
       <g
@@ -401,11 +424,11 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada, encoderData }) {
     const centerGroove = buildOffsetPoints(railPoints, 0);
     const serviceTube = buildOffsetPoints(railPoints, 24);
     return {
-      centerline: pointsToPolyline(railPoints),
-      leftRail: pointsToPolyline(leftRail),
-      rightRail: pointsToPolyline(rightRail),
-      centerGroove: pointsToPolyline(centerGroove),
-      serviceTube: pointsToPolyline(serviceTube),
+      centerline: buildRoundedPath(railPoints, 55),
+      leftRail: buildRoundedPath(leftRail, 55),
+      rightRail: buildRoundedPath(rightRail, 55),
+      centerGroove: buildRoundedPath(centerGroove, 55),
+      serviceTube: buildRoundedPath(serviceTube, 55),
     };
   }, [railPoints]);
 
@@ -440,12 +463,10 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada, encoderData }) {
 
   const ledColor = useMemo(() => getStatusLedColor(robotState.status), [robotState.status]);
 
-  // Priority: encoderData (real hardware) > animation > idle position
-  const cabinPose = encoderPose
-    ? encoderPose
-    : animating
-      ? { x: animPos.x, y: animPos.y, angle: animPos.angle }
-      : { x: robotState.x, y: robotState.y, angle: robotIdleAngle };
+  // Cabin carriage sprite position is driven by PLC animation/state
+  const cabinPose = animating
+    ? { x: animPos.x, y: animPos.y, angle: animPos.angle }
+    : { x: robotState.x, y: robotState.y, angle: robotIdleAngle };
 
   return (
     <svg
@@ -475,23 +496,9 @@ const ScadaSVGMap = memo(function ScadaSVGMap({ scada, encoderData }) {
         status={robotState.status}
         moveId={moveId}
         ids={ids}
-        animating={animating && !encoderPose}
-        useTransition={!!encoderPose}
+        animating={animating}
+        useTransition={false}
       />
-
-      {/* Encoder real-time position overlay */}
-      <EncoderOverlay encoderData={encoderData} />
-
-      {/* Debug: encoder data connection status */}
-      <g>
-        <rect x={20} y={10} width={encoderData ? 220 : 160} height={24} rx={6}
-          fill={encoderData ? 'rgba(0,200,83,0.85)' : 'rgba(255,50,50,0.75)'} />
-        <text x={30} y={27} fill="white" fontSize={11} fontWeight="bold" fontFamily="monospace">
-          {encoderData
-            ? `✓ ENCODER: ${Number(encoderData.positionPct).toFixed(1)}% | ${Number(encoderData.positionCm).toFixed(0)}cm`
-            : '✗ NO ENCODER DATA'}
-        </text>
-      </g>
     </svg>
   );
 });

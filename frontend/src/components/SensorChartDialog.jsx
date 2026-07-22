@@ -89,7 +89,7 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
   }));
 
   // Target screen-space dot radius (px); compensate for viewBox stretch.
-  const SCREEN_DOT_R = 2.5;
+  const SCREEN_DOT_R = 1.2;
   const dotRx = (SCREEN_DOT_R * 100) / Math.max(containerWidth, 1);
   const dotRy = (SCREEN_DOT_R * 100) / Math.max(height, 1);
 
@@ -108,7 +108,7 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
             key={pct}
             x1={0} y1={pct} x2={100} y2={pct}
             stroke="rgba(255,255,255,0.06)"
-            strokeWidth={0.5}
+            strokeWidth={0.2}
           />
         ))}
 
@@ -139,7 +139,7 @@ const LineChart = memo(function LineChart({ datasets, height = 160, showGrid = t
               d={path}
               fill="none"
               stroke={ds.color}
-              strokeWidth={ds.strokeWidth ?? 1.8}
+              strokeWidth={ds.strokeWidth ?? 0.8}
               strokeOpacity={ds.opacity ?? 1}
               strokeLinejoin="round"
               strokeLinecap="round"
@@ -351,8 +351,8 @@ const SensorChartDialog = memo(function SensorChartDialog({
               <Box sx={{ bgcolor: alpha('#65B5FF', 0.05), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#65B5FF', 0.12)}` }}>
                 <LineChart
                   datasets={[
-                    { data: envChartData.temp,   color: '#65B5FF', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.12 },
-                    { data: envChartData.tempMA, color: '#65B5FF', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: envChartData.temp,   color: '#65B5FF', strokeWidth: 0.4, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.08 },
+                    { data: envChartData.tempMA, color: '#65B5FF', strokeWidth: 1.0, opacity: 1,   showDots: false, fillOpacity: 0 },
                   ]}
                   height={140}
                 />
@@ -383,8 +383,8 @@ const SensorChartDialog = memo(function SensorChartDialog({
               <Box sx={{ bgcolor: alpha('#29B6F6', 0.05), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#29B6F6', 0.12)}` }}>
                 <LineChart
                   datasets={[
-                    { data: envChartData.hum,   color: '#29B6F6', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.12 },
-                    { data: envChartData.humMA, color: '#29B6F6', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: envChartData.hum,   color: '#29B6F6', strokeWidth: 0.4, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.08 },
+                    { data: envChartData.humMA, color: '#29B6F6', strokeWidth: 1.0, opacity: 1,   showDots: false, fillOpacity: 0 },
                   ]}
                   height={120}
                 />
@@ -428,8 +428,8 @@ const SensorChartDialog = memo(function SensorChartDialog({
               <Box sx={{ bgcolor: alpha('#0BDF50', 0.05), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#0BDF50', 0.12)}` }}>
                 <LineChart
                   datasets={[
-                    { data: stabilityChartData.score,   color: '#0BDF50', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.12 },
-                    { data: stabilityChartData.scoreMA, color: '#0BDF50', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: stabilityChartData.score,   color: '#0BDF50', strokeWidth: 0.4, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.08 },
+                    { data: stabilityChartData.scoreMA, color: '#0BDF50', strokeWidth: 1.0, opacity: 1,   showDots: false, fillOpacity: 0 },
                   ]}
                   height={140}
                 />
@@ -456,12 +456,12 @@ const SensorChartDialog = memo(function SensorChartDialog({
               <Box sx={{ bgcolor: alpha('#FF5722', 0.04), borderRadius: 2, p: 1.25, border: `1px solid ${alpha('#FF5722', 0.1)}` }}>
                 <LineChart
                   datasets={[
-                    { data: stabilityChartData.ax,   color: '#FF5722', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.08 },
-                    { data: stabilityChartData.axMA, color: '#FF5722', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
-                    { data: stabilityChartData.ay,   color: '#FFC107', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0 },
-                    { data: stabilityChartData.ayMA, color: '#FFC107', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
-                    { data: stabilityChartData.az,   color: '#29B6F6', strokeWidth: 1.2, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0 },
-                    { data: stabilityChartData.azMA, color: '#29B6F6', strokeWidth: 2.8, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: stabilityChartData.ax,   color: '#FF5722', strokeWidth: 0.4, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0.04 },
+                    { data: stabilityChartData.axMA, color: '#FF5722', strokeWidth: 1.0, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: stabilityChartData.ay,   color: '#FFC107', strokeWidth: 0.4, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0 },
+                    { data: stabilityChartData.ayMA, color: '#FFC107', strokeWidth: 1.0, opacity: 1,   showDots: false, fillOpacity: 0 },
+                    { data: stabilityChartData.az,   color: '#29B6F6', strokeWidth: 0.4, opacity: 0.5, showDots: true,  dotOpacity: 0.55, fillOpacity: 0 },
+                    { data: stabilityChartData.azMA, color: '#29B6F6', strokeWidth: 1.0, opacity: 1,   showDots: false, fillOpacity: 0 },
                   ]}
                   height={130}
                 />

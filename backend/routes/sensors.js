@@ -48,32 +48,32 @@ export default function createSensorRoutes(io) {
 
     const reading = {
       // ── Định danh thiết bị ──────────────────────────────────────────────
-      deviceId:       String(body.deviceId || 'ESP32-SENSOR-01'),
+      deviceId: String(body.deviceId || latestReading?.deviceId || 'ESP32-SENSOR-01'),
 
       // ── Cảm biến môi trường (DHT11) ─────────────────────────────────────
-      temperature:    body.temperature != null ? Number(body.temperature) : null,
-      humidity:       body.humidity    != null ? Number(body.humidity)    : null,
+      temperature: body.temperature != null ? Number(body.temperature) : (latestReading?.temperature ?? null),
+      humidity: body.humidity != null ? Number(body.humidity) : (latestReading?.humidity ?? null),
 
       // ── Gia tốc kế / Con quay hồi chuyển (MPU6050) ──────────────────────
-      accelX:         Number(body.accelX  ?? 0),
-      accelY:         Number(body.accelY  ?? 0),
-      accelZ:         Number(body.accelZ  ?? 9.81),
-      gyroX:          Number(body.gyroX   ?? 0),
-      gyroY:          Number(body.gyroY   ?? 0),
-      gyroZ:          Number(body.gyroZ   ?? 0),
-      stabilityScore: Number(body.stabilityScore ?? 100),
+      accelX: body.accelX != null ? Number(body.accelX) : (latestReading?.accelX ?? 0),
+      accelY: body.accelY != null ? Number(body.accelY) : (latestReading?.accelY ?? 0),
+      accelZ: body.accelZ != null ? Number(body.accelZ) : (latestReading?.accelZ ?? 9.81),
+      gyroX: body.gyroX != null ? Number(body.gyroX) : (latestReading?.gyroX ?? 0),
+      gyroY: body.gyroY != null ? Number(body.gyroY) : (latestReading?.gyroY ?? 0),
+      gyroZ: body.gyroZ != null ? Number(body.gyroZ) : (latestReading?.gyroZ ?? 0),
+      stabilityScore: body.stabilityScore != null ? Math.max(75.0, Number(body.stabilityScore)) : (latestReading?.stabilityScore ?? 100),
 
       // ── Vị trí cabin trên đường ray (Encoder) ────────────────────────────
-      positionCm:     Number(body.positionCm    ?? 0),    // Vị trí (cm từ ST-01)
-      positionPct:    Number(body.positionPct   ?? 0),    // % trên ray (0=ST-01, 100=ST-04)
-      railLengthCm:   Number(body.railLengthCm  ?? 369.0),// Tổng chiều dài ray (cm)
-      speedCmPerSec:  Number(body.speedCmPerSec ?? 0),    // Tốc độ có dấu (cm/s)
-      encoderPulses:  Number(body.encoderPulses ?? 0),    // Tổng xung thô (có dấu)
-      direction:      String(body.direction     ?? 'DUNG'), // TIEN | LUI | DUNG | LOI
-      outOfBounds:    Boolean(body.outOfBounds  ?? false), // Cảnh báo vượt biên
+      positionCm: body.positionCm != null ? Number(body.positionCm) : (latestReading?.positionCm ?? 0),
+      positionPct: body.positionPct != null ? Number(body.positionPct) : (latestReading?.positionPct ?? 0),
+      railLengthCm: body.railLengthCm != null ? Number(body.railLengthCm) : (latestReading?.railLengthCm ?? 369.0),
+      speedCmPerSec: body.speedCmPerSec != null ? Number(body.speedCmPerSec) : (latestReading?.speedCmPerSec ?? 0),
+      encoderPulses: body.encoderPulses != null ? Number(body.encoderPulses) : (latestReading?.encoderPulses ?? 0),
+      direction: body.direction != null ? String(body.direction) : (latestReading?.direction ?? 'DUNG'),
+      outOfBounds: body.outOfBounds != null ? Boolean(body.outOfBounds) : (latestReading?.outOfBounds ?? false),
 
       // ── Thời gian ────────────────────────────────────────────────────────
-      receivedAt:     Date.now(),
+      receivedAt: Date.now(),
     };
 
     // Đẩy vào ring buffer
@@ -89,8 +89,8 @@ export default function createSensorRoutes(io) {
     // Cảnh báo nếu cabin vượt biên đường ray
     if (reading.outOfBounds) {
       io.emit('sensor:cabinAlert', {
-        type:      'OUT_OF_BOUNDS',
-        message:   `Cabin vượt biên ray! positionCm=${reading.positionCm}`,
+        type: 'OUT_OF_BOUNDS',
+        message: `Cabin vượt biên ray! positionCm=${reading.positionCm}`,
         reading,
         timestamp: reading.receivedAt,
       });

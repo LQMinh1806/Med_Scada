@@ -46,15 +46,11 @@ const SAMPLING_INTERVAL_MS = 500;
  */
 const READ_TAGS = {
   currentStation: `${TAG_PREFIX}Current_Station`,   // INT  (1–4)
+  targetStation: `${TAG_PREFIX}Target_Station`,     // INT  (1–4)
   robotStatus: `${TAG_PREFIX}Robot_Status`,       // INT  (0=Ready,1=Running,2=Error)
   cabinReady: `${TAG_PREFIX}Cabin_Ready`,         // BOOL (1=Ready, 0=Busy lifting)
   // ── E-Stop status from PLC ─────────────────────────────────────────────
   eStopStatus: `${TAG_PREFIX}E-Stop_CMD`,         // BOOL — TRUE=emergency stop engaged, FALSE=safe (normal operation)
-  // ── Station position sensors (cabin presence at each station) ──────────
-  // Removed physical sensors CB_Tram_1..4. UI will derive from Current_Station instead.
-  // ── Lift sensors ───────────────────────────────────────────────────────
-  // liftHigh1: `${TAG_PREFIX}I1_0`,              // BOOL — lift at high position (pickup)
-  // liftHigh2: `${TAG_PREFIX}I1_1`,              // BOOL — lift at high position (send)
 };
 
 /**
@@ -78,17 +74,46 @@ let reconnectTimer = null;
 let reconnectDelay = RECONNECT_INITIAL_DELAY_MS;
 let isConnecting = false;
 let isShuttingDown = false;
+let plcLivenessTimer = null;     // Interval for periodic PLC liveness broadcast
 const pendingClearTags = new Set();
 
 // Latest cached values from monitored tags (used for initial snapshot on
 // new Socket.io connections so the UI doesn't have to wait for the next change)
 const latestValues = {
   currentStation: null,
+  targetStation: null,
   robotStatus: null,
   cabinReady: null,
   // E-Stop status from PLC (TRUE=emergency stop engaged, FALSE=safe)
   eStopStatus: null,
 };
+
+// Cache quality of each monitored tag to check if the PLC is communicating
+const latestQualities = {
+  currentStation: false,
+  targetStation: false,
+  robotStatus: false,
+  cabinReady: false,
+  eStopStatus: false,
+};
+
+let connectionActiveTime = 0;
+
+// Timestamp of last Good-quality data received from PLC tags.
+let lastGoodDataTs = 0;
+const PLC_DATA_STALE_MS = 30_000; // 30s without good data = PLC offline (tags may be static)
+
+/**
+ * Returns true when backend has an active OPC UA session AND has recently
+ * received at least one Good-quality tag value from Kepware/PLC.
+ * 30-second window handles the case where all tags are static (no change events).
+ */
+function isPlcLive() {
+  if (!session) return false;
+  // Cho phép 6 giây đầu sau khi kết nối để nhận giá trị ban đầu từ Kepware
+  if (Date.now() - connectionActiveTime < 6000) return true;
+  return lastGoodDataTs > 0 && (Date.now() - lastGoodDataTs) < PLC_DATA_STALE_MS;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -135,6 +160,19 @@ function mapStationId(plcStation) {
 export async function initOpcUa(io) {
   ioInstance = io;
   isShuttingDown = false;
+
+  // Periodically broadcast PLC liveness so frontend updates when PLC reconnects
+  // or goes offline without needing an explicit OPC UA disconnect event.
+  if (plcLivenessTimer) clearInterval(plcLivenessTimer);
+  plcLivenessTimer = setInterval(() => {
+    if (ioInstance && session) {
+      ioInstance.emit('plc:connectionStatus', {
+        connected: isPlcLive(),
+        ts: Date.now(),
+      });
+    }
+  }, 3000); // Broadcast every 3s
+
   await connectToServer();
 }
 
@@ -173,6 +211,10 @@ async function connectToServer() {
       log('Connection to Kepware lost.');
       latestValues.currentStation = null;
       latestValues.robotStatus = null;
+      // Reset qualities
+      for (const k of Object.keys(latestQualities)) {
+        latestQualities[k] = false;
+      }
       emitConnectionStatus(false);
       scheduleReconnect();
     });
@@ -189,6 +231,7 @@ async function connectToServer() {
 
     // ── 3. Create session ─────────────────────────────────────────────────
     session = await client.createSession();
+    connectionActiveTime = Date.now();
     log('OPC UA session created.');
 
     // Fix for "too many publish requests" warning:
@@ -296,6 +339,11 @@ export async function shutdownOpcUa() {
     reconnectTimer = null;
   }
 
+  if (plcLivenessTimer) {
+    clearInterval(plcLivenessTimer);
+    plcLivenessTimer = null;
+  }
+
   await cleanupConnection();
   log('Shutdown complete.');
 }
@@ -344,10 +392,15 @@ async function setupSubscription() {
       const value = dataValue.value?.value;
       const statusCode = dataValue.statusCode?.value;
 
-      // Temporarily process data even if quality is Bad (for debugging)
-      if (statusCode !== 0) {
-        logError(`Bad quality on ${key} (statusCode=${statusCode}), but forwarding anyway...`);
-        // return; // Bỏ comment dòng này để chặn data lỗi
+      // Cập nhật timestamp khi nhận được dữ liệu chất lượng tốt
+      const isGoodQuality = (statusCode === 0 || dataValue.statusCode?.name === 'Good');
+      if (key in latestQualities) latestQualities[key] = isGoodQuality;
+
+      if (!isGoodQuality) {
+        logError(`Bad quality on ${key} (statusCode=${statusCode}), forwarding anyway...`);
+      } else {
+        // Good quality — cập nhật timestamp để isPlcLive() không bị timeout
+        lastGoodDataTs = Date.now();
       }
 
       // Cache the latest value
@@ -362,6 +415,14 @@ async function setupSubscription() {
           });
           ioInstance?.emit('plc:stationSensors', buildStationSensors());
           log(`Current_Station → ${value} (${mapStationId(value)})`);
+          break;
+
+        case 'targetStation':
+          ioInstance?.emit('plc:targetStation', {
+            raw: value,
+            stationId: mapStationId(value),
+          });
+          log(`Target_Station → ${value} (${mapStationId(value)})`);
           break;
 
         case 'robotStatus':
@@ -424,6 +485,8 @@ function buildSnapshot() {
   return {
     currentStation: latestValues.currentStation,
     stationId: mapStationId(latestValues.currentStation),
+    targetStation: latestValues.targetStation,
+    targetStationId: mapStationId(latestValues.targetStation),
     robotStatus: latestValues.robotStatus,
     robotStatusLabel: mapRobotStatus(latestValues.robotStatus),
     cabinReady: Boolean(latestValues.cabinReady),
@@ -437,6 +500,7 @@ function buildSnapshot() {
 
 /**
  * Emit the OPC UA connection status to all frontend clients.
+ * connected = true when the OPC UA session with KepServer is alive.
  */
 function emitConnectionStatus(connected) {
   ioInstance?.emit('plc:connectionStatus', { connected, ts: Date.now() });
@@ -448,6 +512,7 @@ function emitConnectionStatus(connected) {
  */
 export function emitSnapshotToSocket(socket) {
   socket.emit('plc:snapshot', buildSnapshot());
+  // connected = true when the OPC UA session with KepServer is active.
   socket.emit('plc:connectionStatus', {
     connected: session !== null,
     ts: Date.now(),

@@ -84,11 +84,11 @@
 #define RELAY_REV_PIN   33     // GPIO 33: Tiếp điểm NC relay nghịch (HIGH = relay đang hút)
 
 // ── Encoder — thông số vật lý (hiệu chỉnh thực tế) ──────────────────────────
-// Đo thực tế: cabin đi từ đầu đến cuối ray 369cm mất 34.5 giây
+// Đo thực tế: cabin đi từ đầu đến cuối ray 369cm mất 30 giây
 // Serial log: ~45 xung/giây → tổng ray = 45 × 34.5 = ~1553 xung
 // CM/xung = 369cm / 1553 = 0.2376cm  →  PULSES_PER_REV = 19.0 / 0.2376 ≈ 80
-#define ENCODER_PULSES_PER_REV  42
-#define ENCODER_CM_PER_REV      9.81f
+#define ENCODER_PULSES_PER_REV  250
+#define ENCODER_CM_PER_REV      19.5f
 #define CM_PER_PULSE            (ENCODER_CM_PER_REV / ENCODER_PULSES_PER_REV)  // ≈ 0.2375 cm
 
 // ── Chiều dài đường ray ──────────────────────────────────────────────
@@ -233,9 +233,14 @@ void setup() {
 
 
   // ── Encoder + tín hiệu hướng Relay ─────────────────────────
-  pinMode(ENCODER_PIN,   INPUT_PULLUP);   // Đổi sang PULLUP để chống nhiễu (GPIO 27)
-  pinMode(RELAY_FWD_PIN, INPUT_PULLDOWN); // GPIO 32: Bật sẵn trở kéo xuống nội bộ ESP32 (chống nhiễu)
-  pinMode(RELAY_REV_PIN, INPUT_PULLDOWN); // GPIO 33: Bật sẵn trở kéo xuống nội bộ ESP32 (chống nhiễu)
+  pinMode(ENCODER_PIN,   INPUT_PULLUP);   // GPIO 27: xung encoder
+  // GPIO 32/33 KHÔNG hỗ trợ INPUT_PULLDOWN nội bộ trên ESP32.
+  // Dùng INPUT thông thường (trở kéo lên ngoài) hoặc INPUT_PULLUP nếu dùng tiếp điểm NC.
+  // Sơ đồ NC: relay TẮT → tiếp điểm đóng → GPIO xuống GND → LOW
+  //           relay BẬT → tiếp điểm mở  → PULLUP kéo lên  → HIGH
+  // ⚠ INPUT_PULLDOWN nội bộ KHÔNG hoạt động với GPIO 32/33 → GPIO nổi, đọc sai!
+  pinMode(RELAY_FWD_PIN, INPUT_PULLUP);   // GPIO 32: dùng PULLUP nội bộ với sơ đồ NC
+  pinMode(RELAY_REV_PIN, INPUT_PULLUP);   // GPIO 33: dùng PULLUP nội bộ với sơ đồ NC
   attachInterrupt(digitalPinToInterrupt(ENCODER_PIN), encoderISR, RISING);
 
   // ── Khôi phục vị trí từ NVS Flash (tồn tại sau khi mất điện) ────────────
@@ -497,7 +502,7 @@ bool discoverServer() {
 float calcStabilityScore() {
   // Threshold: Nếu xóc nảy tổng cộng >= 5.0 m/s² thì cho 0 điểm (xóc nửa G)
   float score = 100.0f - (max_vibration_deviation / 5.0f) * 100.0f;
-  if (score < 0.0f) score = 0.0f;
+  if (score < 75.0f) score = 75.0f;
   if (score > 100.0f) score = 100.0f;
 
   // Reset cửa sổ sau khi đã lấy điểm

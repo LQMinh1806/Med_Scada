@@ -270,11 +270,11 @@ const PasswordPanel = memo(function PasswordPanel({ onSuccess }) {
 
 // ── Main Dialog ──────────────────────────────────────────────
 const ControlAuthDialog = memo(function ControlAuthDialog({ open, onClose, onSuccess, scada }) {
-  const [mode, setMode] = useState('password'); // 'password' | 'fingerprint'
+  const [mode, setMode] = useState('fingerprint'); // 'password' | 'fingerprint'
 
-  // Reset mode when dialog opens
+  // Reset mode to fingerprint whenever dialog opens
   useEffect(() => {
-    if (open) setMode('password');
+    if (open) setMode('fingerprint');
   }, [open]);
 
   const handlePasswordSuccess = useCallback((user) => {

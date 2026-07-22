@@ -82,7 +82,7 @@ echo.
 echo [6/6] Starting Prisma Studio and backend...
 start "" /B "%NPM_CMD%" run prisma:studio -- --browser none
 
-call "%NPM_CMD%" run start -w backend
+call "%NPM_CMD%" run dev -w backend
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

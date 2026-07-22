@@ -235,5 +235,43 @@ export default function createAuthRoutes(prisma) {
     }
   });
 
+  // ── POST /api/auth/restore-master ─────────────────────────────────────
+  router.post('/restore-master', requireAuth, async (req, res) => {
+    try {
+      const { targetUserId } = req.body ?? {};
+      const targetId = Number(targetUserId);
+      if (!targetId || targetId <= 0) {
+        return res.status(400).json({ message: 'Valid targetUserId is required.' });
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: targetId },
+      });
+
+      if (!user || !user.active) {
+        return res.status(404).json({ message: 'Master user not found or inactive.' });
+      }
+
+      const token = jwt.sign(
+        {
+          sub: user.id,
+          username: user.username,
+          role: toApiRole(user.role),
+          stationId: user.stationId ?? null,
+        },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES_IN }
+      );
+
+      setAuthCookie(res, token);
+      setCsrfCookie(res, generateCsrfToken());
+
+      return res.status(200).json({ user: mapUserForApi(user) });
+    } catch (error) {
+      console.error('RESTORE_MASTER_ERROR', error);
+      return res.status(500).json({ message: 'Internal server error.' });
+    }
+  });
+
   return router;
 }

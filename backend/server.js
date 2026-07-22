@@ -143,7 +143,7 @@ async function startServer() {
 
   // ── Start UDP Discovery Listener ───────────────────────────────────────────
   const udpServer = dgram.createSocket('udp4');
-  
+
   udpServer.on('message', (msg, rinfo) => {
     if (msg.toString() === 'MEDSCADA_DISCOVER') {
       const reply = `MEDSCADA_SERVER:${PORT}`;
@@ -151,17 +151,17 @@ async function startServer() {
       udpServer.send(reply, rinfo.port, rinfo.address);
     }
   });
-  
+
   udpServer.on('error', (err) => {
     console.error(`[Server] UDP Discovery error:\n${err.message}`);
     udpServer.close();
   });
-  
+
   try {
     udpServer.bind(3030, () => {
       console.log(`[Server] UDP Discovery service listening on port 3030`);
       udpServer.setBroadcast(true);
-      
+
       // Calculate subnet broadcast addresses for all network interfaces
       const getBroadcastAddresses = () => {
         const addresses = [];

@@ -26,7 +26,6 @@ import {
 } from '@mui/icons-material';
 import StationControlCard from './StationControlCard';
 import SpecimenScanPanel from './SpecimenScanPanel';
-import EStopButton from './EStopButton';
 import { ROBOT_STATUS } from '../constants';
 import { useNotification } from '../contexts/NotificationContext';
 
@@ -306,23 +305,24 @@ const ControlPage = memo(function ControlPage({ scada, onComplete }) {
   const stationViewModels = useMemo(
     () =>
       stations.map((station) => {
-        // isCurrent: chỉ dùng currentStation từ PLC để xác định cabin đang ở trạm nào
-        // plcState.currentStation là số trạm (1-4), station.idx cũng là số (0-indexed)
-        // station.id là ST-01..ST-04, map với plcState.currentStation
+        // isCurrent: Khi PLC online, vị trí cabin được đồng bộ TUYỆT ĐỐI theo biến currentStation từ PLC
+        // Chỉ fallback theo robotState.index của bản đồ khi PLC thực sự bị mất kết nối (isPlcConnected = false)
         const plcStationNum = plcState?.currentStation; // 1-4
-        const isCurrentByPlc = plcStationNum != null && parseInt(station.id.split('-')[1], 10) === plcStationNum;
+        const isCurrentStation = (plcStationNum != null && plcStationNum >= 1 && plcStationNum <= 4)
+          ? parseInt(station.id.split('-')[1], 10) === plcStationNum
+          : (plcState?.isPlcConnected ? false : robotState.index === station.idx);
         return {
           station: {
             ...station,
             samples: waitingSpecimenCounts[station.id] || 0,
           },
-          isCurrent: isCurrentByPlc,
+          isCurrent: isCurrentStation,
           isTarget: robotState.targetId === station.id,
           queueInfo: stationQueueMap[station.id] || null,
           routeStopInfo: routeStopMap[station.id] || null,
         };
       }),
-    [stations, robotState.targetId, routeStopMap, stationQueueMap, waitingSpecimenCounts, plcState?.currentStation]
+    [stations, robotState.index, robotState.targetId, routeStopMap, stationQueueMap, waitingSpecimenCounts, plcState?.currentStation, plcState?.isPlcConnected]
   );
 
   const destinationOptions = useMemo(() => {
@@ -443,7 +443,6 @@ const ControlPage = memo(function ControlPage({ scada, onComplete }) {
                 KHÔI PHỤC
               </Button>
             )}
-            <EStopButton onEStop={handleEStop} hwEStopActive={Boolean(plcState?.eStopActive)} />
           </Box>
 
           {/* === E-Stop Freeze Banner === */}

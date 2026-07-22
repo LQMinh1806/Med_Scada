@@ -76,15 +76,68 @@ function orderDispatchDestinations(originStationId, destinationStationIds, prior
     remaining = remaining.slice(1);
   }
 
-  return ordered.map((stationId) => getStationById(stationId)).filter(Boolean);
+  return ordered.map((id) => getStationById(id)).filter(Boolean);
 }
+const getStationTime = (stationNum) => {
+  if (stationNum === 1) return 0;
+  if (stationNum === 2) return 11;
+  if (stationNum === 3) return 19;
+  if (stationNum === 4) return 30;
+  return 0;
+};
 
-// =====================================================
-// Main SCADA hook
-// =====================================================
+// Maps PLC travel time (seconds) → % position on the SVG rail polyline.
+// Breakpoints derived from geometric segment lengths of RAIL_POINTS (constants.js):
+//   Total rail length ≈ 1602.7px
+//   ST-01 (t=0s)  → 4.99%   (120px)
+//   ST-02 (t=11s) → 37.66%  (604px)
+//   ST-03 (t=19s) → 61.99%  (994px)
+//   ST-04 (t=30s) → 95.01%  (1513px)
+const getPctForTime = (t) => {
+  if (t <= 0) return 4.99;
+  if (t >= 30) return 95.01;
+  if (t <= 11) {
+    return 4.99 + (t / 11) * (37.66 - 4.99);
+  } else if (t <= 19) {
+    return 37.66 + ((t - 11) / 8) * (61.99 - 37.66);
+  } else {
+    return 61.99 + ((t - 19) / 11) * (95.01 - 61.99);
+  }
+};
+
+const getPositionOnRail = (railPoints, pct) => {
+  if (!railPoints || railPoints.length < 2) return { x: 0, y: 0, angle: 0 };
+  const clampedPct = Math.min(Math.max(pct, 0), 100);
+
+  const segLengths = [];
+  for (let i = 0; i < railPoints.length - 1; i++) {
+    const dx = railPoints[i + 1].x - railPoints[i].x;
+    const dy = railPoints[i + 1].y - railPoints[i].y;
+    segLengths.push(Math.hypot(dx, dy));
+  }
+  
+  const totalLength = segLengths.reduce((a, b) => a + b, 0);
+  const targetDist = (clampedPct / 100) * totalLength;
+
+  let accumulated = 0;
+  for (let i = 0; i < segLengths.length; i++) {
+    const segLen = segLengths[i];
+    if (accumulated + segLen >= targetDist || i === segLengths.length - 1) {
+      const t = segLen > 0 ? (targetDist - accumulated) / segLen : 0;
+      const p0 = railPoints[i];
+      const p1 = railPoints[i + 1] || p0;
+      const x = p0.x + t * (p1.x - p0.x);
+      const y = p0.y + t * (p1.y - p0.y);
+      const angle = (Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180) / Math.PI;
+      return { x, y, angle };
+    }
+    accumulated += segLen;
+  }
+  const last = railPoints[railPoints.length - 1];
+  return { x: last.x, y: last.y, angle: 0 };
+};
 
 export default function useScada() {
-  // === Auth state ===
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
 
@@ -151,6 +204,7 @@ export default function useScada() {
   // overwrite robotState.status — otherwise the user's E-STOP reset
   // action gets reverted when the server log still shows ESTOP status.
   const initialHydrationDoneRef = useRef(false);
+  const activeAnimRef = useRef(null);
   // FIX [M5]: Track acknowledgeTask timer for cleanup on unmount
   const ackResetTimerRef = useRef(null);
   // FIX [H1]: Debounce timer for hydration calls
@@ -198,9 +252,14 @@ export default function useScada() {
   useEffect(() => {
     opc.setOnCabinSensor((data) => {
       if (!data || typeof data !== 'object') return;
-      setCabinSensorData(data);
+      setCabinSensorData((prev) => ({
+        ...(prev || {}),
+        ...data,
+      }));
       setSensorHistory((prev) => {
-        const next = [...prev, data];
+        const lastRecord = prev[prev.length - 1] || {};
+        const nextRecord = { ...lastRecord, ...data };
+        const next = [...prev, nextRecord];
         if (next.length > SENSOR_HISTORY_MAX) next.shift();
         return next;
       });
@@ -224,7 +283,15 @@ export default function useScada() {
         if (res.ok && active) {
           const data = await res.json();
           if (data && typeof data === 'object' && data.positionPct != null) {
-            setCabinSensorData(data);
+            // FIX: Merge encoder position into existing sensor data to avoid
+            // overwriting temperature/humidity fields (only positionPct comes
+            // from this endpoint; DHT11 data arrives via socket separately).
+            setCabinSensorData((prev) => ({
+              ...(prev || {}),
+              positionPct: data.positionPct,
+              encoderCount: data.encoderCount ?? (prev?.encoderCount ?? null),
+              encoderTs: data.encoderTs ?? (prev?.encoderTs ?? null),
+            }));
           }
         }
       } catch {
@@ -954,7 +1021,13 @@ export default function useScada() {
   }, []);
 
   // === Animation engine (DEPRECATED) ===
-  const stopAnimation = useCallback(() => {}, []);
+  const stopAnimation = useCallback(() => {
+    if (activeAnimRef.current) {
+      cancelAnimationFrame(activeAnimRef.current.frameId);
+      activeAnimRef.current = null;
+    }
+    setAnimating(false);
+  }, []);
 
   const setMaintenanceState = useCallback((enabled, reason = '') => {
     const normalizedReason = String(reason || '').trim();
@@ -1241,6 +1314,26 @@ export default function useScada() {
     if (activeDispatchRouteRef.current) {
       addLog('Đang có lộ trình vận chuyển chưa hoàn tất', 'error');
       return null;
+    }
+
+    const isPlcAtOrigin = opc.plcState?.currentStation != null && opc.plcState.currentStation === parseInt(originStation.id.split('-')[1], 10);
+    const isPlcStopped = opc.plcState?.robotStatus === 0 || opc.plcState?.robotStatus === 2 || opc.plcState?.robotStatus == null;
+
+    // Tự động đồng bộ UI state nếu PLC thực tế đang ở trạm xuất phát và đang dừng
+    if (isPlcAtOrigin && !opc.plcState?.eStopActive) {
+      if (robotStateRef.current.index !== originStation.idx || robotStateRef.current.status !== ROBOT_STATUS.READY) {
+        const point = RAIL_POINTS[originStation.idx];
+        const syncedState = {
+          ...robotStateRef.current,
+          index: originStation.idx,
+          x: point ? point.x : robotStateRef.current.x,
+          y: point ? point.y : robotStateRef.current.y,
+          targetId: originStation.id,
+          status: ROBOT_STATUS.READY,
+        };
+        robotStateRef.current = syncedState;
+        setRobotState(syncedState);
+      }
     }
 
     if (queueRef.current.length > 0 || animatingRef.current || robotStateRef.current.status !== ROBOT_STATUS.READY) {
@@ -1803,6 +1896,8 @@ export default function useScada() {
 
   // === Sync PLC currentStation → robotState.index ===
   const plcCurrentStationArrivalRef = useRef(null);
+  const lastMoveEndTsRef = useRef(0);
+
   useEffect(() => {
     const plcStation = opc.plcState.currentStation;
     if (plcStation == null) return;
@@ -1822,6 +1917,7 @@ export default function useScada() {
 
     if (currentStatus === ROBOT_STATUS.MOVING && currentTarget === matchedStation.id && prevPlcStation !== plcStation) {
       console.log(`[PLC SYNC] PLC xác nhận cabin đến ${matchedStation.name} → hoàn thành di chuyển`);
+      lastMoveEndTsRef.current = Date.now();
 
       const point = RAIL_POINTS[plcIndex];
       const arrivedTime = new Date().toISOString();
@@ -1864,18 +1960,42 @@ export default function useScada() {
     }
 
     // 2. Không di chuyển theo lệnh (bị kéo tay hoặc cập nhật lần đầu): chỉ cập nhật vị trí UI
+    // Bỏ qua nếu cabin đang thực sự di chuyển (status=1 VÀ current≠target), hoặc đang animating
+    // Không dùng robotStatus===1 đơn thuần vì PLC có thể giữ status=1 sau khi cabin đến nơi
+    const targetStationNum = opc.plcState.targetStation;
+    const isGenuinelyMoving = (currentStatus === ROBOT_STATUS.MOVING || opc.plcState.robotStatus === 1)
+      && targetStationNum != null
+      && plcStation !== targetStationNum;
+    if (isGenuinelyMoving || animatingRef.current) return;
+
+    // Bỏ qua nếu vừa kết thúc di chuyển trong vòng 2 giây nhưng currentStation vẫn là trạm trung gian (chưa cập nhật kịp từ OPC UA về targetStation)
+    if (Date.now() - lastMoveEndTsRef.current < 2000 && targetStationNum != null && plcStation !== targetStationNum && robotStateRef.current.targetId === `ST-${String(targetStationNum).padStart(2, '0')}`) {
+      return;
+    }
+
     if (robotStateRef.current.index === plcIndex) return;
 
     const point = RAIL_POINTS[plcIndex];
     if (!point) return;
 
-    setRobotState((prev) => ({
-      ...prev,
+    setRobotState((prev) => {
+      const next = {
+        ...prev,
+        index: plcIndex,
+        x: point.x,
+        y: point.y,
+        targetId: matchedStation.id,
+      };
+      robotStateRef.current = next;
+      return next;
+    });
+    robotStateRef.current = {
+      ...robotStateRef.current,
       index: plcIndex,
       x: point.x,
       y: point.y,
       targetId: matchedStation.id,
-    }));
+    };
 
     addLog(`[PLC SYNC] Cabin tại trạm ${matchedStation.name} (PLC station=${plcStation})`, 'info');
 
@@ -1888,6 +2008,227 @@ export default function useScada() {
       }, 0);
     }
   }, [opc.plcState.currentStation, addLog, stopAnimation, markRouteStopArrived, queueRef]);
+
+  // === Sync PLC status/target to robotState ===
+  useEffect(() => {
+    const plcStatus = opc.plcState.robotStatus;
+    const plcTarget = opc.plcState.targetStation;
+    if (plcStatus === 1 && plcTarget != null) {
+      const targetId = `ST-${String(plcTarget).padStart(2, '0')}`;
+      if (robotStateRef.current.status !== ROBOT_STATUS.MOVING || robotStateRef.current.targetId !== targetId) {
+        setRobotState((prev) => ({
+          ...prev,
+          status: ROBOT_STATUS.MOVING,
+          targetId: targetId,
+        }));
+        robotStateRef.current.status = ROBOT_STATUS.MOVING;
+        robotStateRef.current.targetId = targetId;
+      }
+    } else if ((plcStatus === 0 || plcStatus == null) && !animatingRef.current) {
+      if (robotStateRef.current.status !== ROBOT_STATUS.READY) {
+        setRobotState((prev) => ({
+          ...prev,
+          status: ROBOT_STATUS.READY,
+        }));
+        robotStateRef.current.status = ROBOT_STATUS.READY;
+      }
+    }
+  }, [opc.plcState.robotStatus, opc.plcState.targetStation]);
+
+  // === Animation loop for smooth movement based on PLC station times ===
+  // animOriginRef: lưu trạm xuất phát TẠI THỜI ĐIỂM BẮT ĐẦU animation,
+  // không thay đổi khi cabin đi qua trạm trung gian.
+  const animOriginRef = useRef(null);
+
+  useEffect(() => {
+    const plcTarget = opc.plcState.targetStation;
+    const plcStatus = opc.plcState.robotStatus;
+    const isEStop = opc.plcState.eStopActive;
+    const plcCurrent = opc.plcState.currentStation;
+
+    // Helper: resolve station idx and pct dynamically from STATIONS config
+    const resolveTarget = (stationNum) => {
+      const st = STATIONS.find(s => parseInt(s.id.split('-')[1], 10) === stationNum);
+      const idx = st ? st.idx : 0;
+      const pct = getPctForTime(getStationTime(stationNum));
+      return { idx, pct, stationId: `ST-${String(stationNum).padStart(2, '0')}`, point: RAIL_POINTS[idx] };
+    };
+
+    // 1. E-Stop hoặc target=null → dừng ngay
+    if (isEStop || plcTarget == null) {
+      if (activeAnimRef.current) {
+        // Nếu đang animation và biết đích → snap cabin về đích
+        if (plcTarget != null) {
+          lastMoveEndTsRef.current = Date.now();
+          const { idx: targetIdx, pct, stationId: targetStationId, point } = resolveTarget(plcTarget);
+          if (point) {
+            const pose = getPositionOnRail(RAIL_POINTS, pct);
+            setAnimPos({ x: pose.x, y: pose.y, angle: pose.angle, progress: pct });
+            setRobotState(prev => ({
+              ...prev, index: targetIdx, x: point.x, y: point.y,
+              targetId: targetStationId, status: ROBOT_STATUS.READY,
+            }));
+            robotStateRef.current = {
+              ...robotStateRef.current, index: targetIdx, x: point.x, y: point.y,
+              targetId: targetStationId, status: ROBOT_STATUS.READY,
+            };
+          }
+        }
+        cancelAnimationFrame(activeAnimRef.current.frameId);
+        activeAnimRef.current = null;
+      }
+      animOriginRef.current = null;
+      setAnimating(false);
+      return;
+    }
+
+    // 1b. PLC báo status=0 (dừng) trong khi animation đang chạy → snap về đích rồi dừng
+    if (plcStatus === 0 && activeAnimRef.current) {
+      lastMoveEndTsRef.current = Date.now();
+      const { idx: targetIdx, pct, stationId: targetStationId, point } = resolveTarget(plcTarget);
+      if (point) {
+        const pose = getPositionOnRail(RAIL_POINTS, pct);
+        setAnimPos({ x: pose.x, y: pose.y, angle: pose.angle, progress: pct });
+        setRobotState(prev => ({
+          ...prev, index: targetIdx, x: point.x, y: point.y,
+          targetId: targetStationId, status: ROBOT_STATUS.READY,
+        }));
+        robotStateRef.current = {
+          ...robotStateRef.current, index: targetIdx, x: point.x, y: point.y,
+          targetId: targetStationId, status: ROBOT_STATUS.READY,
+        };
+      }
+      cancelAnimationFrame(activeAnimRef.current.frameId);
+      activeAnimRef.current = null;
+      animOriginRef.current = null;
+      setAnimating(false);
+      return;
+    }
+
+    // 1c. PLC không di chuyển (status≠1) nhưng không có animation đang chạy → dừng animation state
+    if (plcStatus !== 1 && !activeAnimRef.current) {
+      setAnimating(false);
+      return;
+    }
+
+    // 2. Nếu đang animation và trạm đích không đổi, KHÔNG khởi động lại
+    // (cabin đang đi qua trạm trung gian — plcCurrent thay đổi nhưng target giữ nguyên)
+    if (activeAnimRef.current && activeAnimRef.current.to === plcTarget) {
+      return;
+    }
+
+    // 3. Target vừa thay đổi → khởi động animation mới
+    // Dùng animOriginRef để giữ trạm xuất phát cố định suốt chuyến đi
+    const fromStationNum = animOriginRef.current ?? plcCurrent;
+    const toStationNum = plcTarget;
+
+    // Nếu from === to, không cần animation nhưng vẫn snap animPos về đúng vị trí trạm
+    // (quan trọng: nếu bỏ qua bước này, cabin sẽ hiển thị tại vị trí animPos cũ sau page reload)
+    if (fromStationNum == null || fromStationNum === toStationNum) {
+      if (toStationNum != null) {
+        const { pct, point } = resolveTarget(toStationNum);
+        if (point) {
+          const pose = getPositionOnRail(RAIL_POINTS, pct);
+          setAnimPos({ x: pose.x, y: pose.y, angle: pose.angle, progress: pct });
+        }
+      }
+      setAnimating(false);
+      return;
+    }
+
+    // Hủy animation cũ nếu có
+    if (activeAnimRef.current) {
+      cancelAnimationFrame(activeAnimRef.current.frameId);
+    }
+
+    // Ghi nhớ trạm xuất phát cho chuyến đi này
+    animOriginRef.current = fromStationNum;
+
+    const timeA = getStationTime(fromStationNum);
+    const timeB = getStationTime(toStationNum);
+    const durationSec = Math.abs(timeB - timeA);
+
+    if (durationSec === 0) {
+      setAnimating(false);
+      return;
+    }
+
+    const startTime = Date.now();
+    setAnimating(true);
+    setMoveId((prev) => prev + 1);
+
+    const animate = () => {
+      const elapsedSec = (Date.now() - startTime) / 1000;
+
+      if (elapsedSec >= durationSec) {
+        // Hoàn tất animation tại đúng vị trí trạm đích
+        const targetStation = STATIONS.find(s => parseInt(s.id.split('-')[1], 10) === toStationNum);
+        const targetIdx = targetStation ? targetStation.idx : 0;
+        const targetTime = getStationTime(toStationNum);
+        const pct = getPctForTime(targetTime);
+        const pose = getPositionOnRail(RAIL_POINTS, pct);
+        setAnimPos({ x: pose.x, y: pose.y, angle: pose.angle, progress: pct });
+
+        lastMoveEndTsRef.current = Date.now();
+        // Đồng bộ robotState ngay lập tức về trạm đích trước khi tắt animation
+        const targetStationId = `ST-${String(toStationNum).padStart(2, '0')}`;
+        const point = RAIL_POINTS[targetIdx];
+        if (point) {
+          setRobotState(prev => ({
+            ...prev,
+            index: targetIdx,
+            x: point.x,
+            y: point.y,
+            targetId: targetStationId,
+            status: ROBOT_STATUS.READY,
+          }));
+          robotStateRef.current = {
+            ...robotStateRef.current,
+            index: targetIdx,
+            x: point.x,
+            y: point.y,
+            targetId: targetStationId,
+            status: ROBOT_STATUS.READY,
+          };
+        }
+
+        setAnimating(false);
+        activeAnimRef.current = null;
+        animOriginRef.current = null;
+        return;
+      }
+
+      // Tính % vị trí trên ray dựa theo thời gian thực đã trôi qua
+      const t_track = toStationNum > fromStationNum
+        ? timeA + elapsedSec
+        : timeA - elapsedSec;
+
+      const pct = getPctForTime(t_track);
+      const pose = getPositionOnRail(RAIL_POINTS, pct);
+      setAnimPos({ x: pose.x, y: pose.y, angle: pose.angle, progress: pct });
+
+      if (activeAnimRef.current) {
+        activeAnimRef.current.frameId = requestAnimationFrame(animate);
+      }
+    };
+
+    activeAnimRef.current = {
+      from: fromStationNum,
+      to: toStationNum,
+      frameId: requestAnimationFrame(animate),
+    };
+
+    return () => {
+      if (activeAnimRef.current) {
+        cancelAnimationFrame(activeAnimRef.current.frameId);
+      }
+    };
+  }, [
+    // CHỈ restart khi target hoặc trạng thái di chuyển thay đổi — KHÔNG theo currentStation
+    opc.plcState.targetStation,
+    opc.plcState.robotStatus,
+    opc.plcState.eStopActive,
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // === Public robot commands (enqueue into queue) ===
   const callRobot = useCallback((stationId, priority = PRIORITY.ROUTINE) => {
@@ -2415,6 +2756,8 @@ export default function useScada() {
     sensorHistory,
     // PLC state (station sensors, lift sensors, hardware E-Stop)
     plcState: opc.plcState,
+    // Timestamp of last received PLC data — use for ONLINE/OFFLINE indicator
+    lastPlcDataTs: opc.lastPlcDataTs,
   }), [
     isAuthenticated,
     currentUser,
@@ -2464,5 +2807,6 @@ export default function useScada() {
     cabinSensorData,
     sensorHistory,
     opc.plcState,
+    opc.lastPlcDataTs,
   ]);
 }

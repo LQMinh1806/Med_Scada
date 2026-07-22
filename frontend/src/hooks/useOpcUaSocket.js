@@ -52,10 +52,17 @@ export default function useOpcUaSocket() {
   const pendingStateSyncRef = useRef(null);
   const pendingDataSyncRef = useRef(null);
 
+  // ── Last PLC data timestamp — updated on every plc:snapshot ────────────
+  // Used by App.jsx to determine ONLINE/OFFLINE without relying on connectionStatus event
+  const lastPlcDataTsRef = useRef(0);
+  const [lastPlcDataTs, setLastPlcDataTs] = useState(0);
+
   // ── PLC state — updated by server-pushed events ────────────────────────
   const [plcState, setPlcState] = useState({
     currentStation: null,
     stationId: null,
+    targetStation: null,
+    targetStationId: null,
     robotStatus: null,
     robotStatusLabel: 'Chưa kết nối',
     cabinReady: true,    // Cabin_Ready flag from PLC (true=ready, false=busy lifting)
@@ -87,6 +94,8 @@ export default function useOpcUaSocket() {
     // ── Socket.io connection status ────────────────────────────────────
     socket.on('connect', () => {
       console.log('[OPC-UA Hook] Socket connected:', socket.id);
+      // Re-subscribe so backend resumes pushing data after reconnect
+      socket.emit('subscribe:plc');
       setPlcState((prev) => ({ ...prev, isSocketConnected: true }));
     });
 
@@ -103,6 +112,11 @@ export default function useOpcUaSocket() {
       console.error('[OPC-UA Hook] Connection error:', err.message);
     });
 
+    const markPlcDataFresh = () => {
+      lastPlcDataTsRef.current = Date.now();
+      setLastPlcDataTs(Date.now());
+    };
+
     // ── PLC data events from backend ──────────────────────────────────
 
     /**
@@ -112,10 +126,13 @@ export default function useOpcUaSocket() {
      */
     socket.on('plc:snapshot', (data) => {
       if (!data || typeof data !== 'object') return;
+      markPlcDataFresh();
       setPlcState((prev) => ({
         ...prev,
         currentStation: data.currentStation ?? prev.currentStation,
         stationId: data.stationId ?? prev.stationId,
+        targetStation: data.targetStation ?? prev.targetStation,
+        targetStationId: data.targetStationId ?? prev.targetStationId,
         robotStatus: data.robotStatus ?? prev.robotStatus,
         robotStatusLabel: data.robotStatusLabel ?? prev.robotStatusLabel,
         cabinReady: data.cabinReady ?? prev.cabinReady,
@@ -139,6 +156,15 @@ export default function useOpcUaSocket() {
         ...prev,
         currentStation: data.raw,
         stationId: data.stationId,
+      }));
+    });
+
+    socket.on('plc:targetStation', (data) => {
+      if (!data || typeof data !== 'object') return;
+      setPlcState((prev) => ({
+        ...prev,
+        targetStation: data.raw,
+        targetStationId: data.stationId,
       }));
     });
 
@@ -420,6 +446,7 @@ export default function useOpcUaSocket() {
   return useMemo(
     () => ({
       plcState,
+      lastPlcDataTs,   // timestamp of last received PLC data (for online/offline detection)
       callCabin,
       confirmStation,
       confirmStop,
@@ -441,6 +468,6 @@ export default function useOpcUaSocket() {
       onCabinSensorRef,
       setOnCabinSensor,
     }),
-    [plcState, callCabin, confirmStation, confirmStop, confirmPickup, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
+    [plcState, lastPlcDataTs, callCabin, confirmStation, confirmStop, confirmPickup, triggerEStop, releaseEStop, resetError, setMaintenance, emitStateSync, emitDataSync, setOnStateSync, setOnDataSync, reconnectSocket, getSocket, setOnCabinSensor],
   );
 }
